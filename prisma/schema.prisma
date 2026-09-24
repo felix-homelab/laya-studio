@@ -1,0 +1,358 @@
+// Laya Studio — PostgreSQL schema.
+//
+// This file is the **source of truth for DDL**. `prisma migrate` creates and
+// evolves the database; the Python application queries it through SQLAlchemy
+// (app/models.py) and never creates tables itself.
+//
+//   npx prisma migrate dev --name <change>   # author a migration (development)
+//   npx prisma migrate deploy                # apply migrations (deploy)
+//   npx prisma migrate status                # what has been applied
+//   npx prisma studio                        # browse the data
+//
+// `tests/test_schema_drift.py` migrates a fresh database with these migrations and
+// fails if the result disagrees with app/models.py.
+//
+// Two conventions, both matching SQLAlchemy's output so the two stay comparable:
+//
+//   * `String` maps to `text`, not `varchar(n)`. PostgreSQL gives varchar(n) no
+//     advantage, and length limits are enforced in the application.
+//   * `DateTime @db.Timestamptz(3)` — every timestamp in this application is UTC.
+//     Prisma's bare `DateTime` is `timestamp(3)` without a zone, which would
+//     silently drop the offset.
+//
+// Field names are snake_case to match the columns one-to-one; `@@map` gives each
+// model the plural table name the application expects.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("LAYA_STUDIO_DATABASE_URL")
+}
+
+// =============================================================================
+// Part 3 — custom schema & template management
+// =============================================================================
+
+model EvalSchema {
+  id               Int      @id @default(autoincrement())
+  key              String   @unique(map: "ix_eval_schemas_key")
+  name             String
+  description      String
+  primitive        String
+  definition       Json
+  tags             Json
+  is_template      Boolean
+  current_revision Int
+  created_at       DateTime @default(now()) @db.Timestamptz(3)
+  updated_at       DateTime @default(now()) @db.Timestamptz(3)
+
+  revisions             SchemaRevision[]
+  evaluations           Evaluation[]
+  bulk_jobs             BulkJob[]
+  ab_tests              ABTest[]
+  workflows             Workflow[]
+  calibration_snapshots CalibrationSnapshot[]
+
+  @@index([created_at], map: "ix_eval_schemas_created_at")
+  @@map("eval_schemas")
+}
+
+model SchemaRevision {
+  id         Int      @id @default(autoincrement())
+  schema_id  Int
+  revision   Int
+  definition Json
+  note       String
+  created_at DateTime @default(now()) @db.Timestamptz(3)
+
+  schema                 EvalSchema   @relation(fields: [schema_id], references: [id], onDelete: Cascade)
+  evaluations            Evaluation[]
+  // Two distinct relations to ABTest, so Prisma needs names to tell them apart.
+  ab_tests_as_revision_a ABTest[]     @relation("ABTestRevisionA")
+  ab_tests_as_revision_b ABTest[]     @relation("ABTestRevisionB")
+
+  @@unique([schema_id, revision], map: "uq_schema_revision")
+  @@index([schema_id], map: "ix_schema_revisions_schema_id")
+  @@map("schema_revisions")
+}
+
+// =============================================================================
+// Part 1 — playground, bulk and A/B testing
+// =============================================================================
+
+model Evaluation {
+  id                 Int      @id @default(autoincrement())
+  schema_id          Int?
+  schema_revision_id Int?
+  state              Json
+  state_text         String
+  questions          Json
+  answers            Json
+  question_results   Json
+  routing            Json
+  engine             String
+  engine_model       String
+  primary_question   String?
+  top_choice         String?
+  confidence         Float?
+  raw_confidence     Float?
+  calibrated         Boolean
+  latency_ms         Float
+  source             String
+  label              String?
+  label_source       String?
+  created_at         DateTime @default(now()) @db.Timestamptz(3)
+  updated_at         DateTime @default(now()) @db.Timestamptz(3)
+
+  schema         EvalSchema?     @relation(fields: [schema_id], references: [id], onDelete: SetNull)
+  schemaRevision SchemaRevision? @relation(fields: [schema_revision_id], references: [id], onDelete: SetNull)
+
+  bulk_job_items BulkJobItem[]
+  workflow_runs  WorkflowRun[]
+  review_items   ReviewItem[]
+
+  @@index([created_at], map: "ix_evaluations_created_at")
+  @@index([top_choice], map: "ix_evaluations_top_choice")
+  @@index([source], map: "ix_evaluations_source")
+  @@index([schema_id], map: "ix_evaluations_schema_id")
+  @@index([confidence], map: "ix_evaluations_confidence")
+  @@index([created_at, source], map: "ix_evaluations_created_source")
+  @@map("evaluations")
+}
+
+model BulkJob {
+  id             Int       @id @default(autoincrement())
+  name           String
+  schema_id      Int?
+  filename       String
+  status         String
+  total_rows     Int
+  processed_rows Int
+  failed_rows    Int
+  options        Json
+  summary        Json
+  error          String?
+  started_at     DateTime? @db.Timestamptz(3)
+  finished_at    DateTime? @db.Timestamptz(3)
+  created_at     DateTime  @default(now()) @db.Timestamptz(3)
+  updated_at     DateTime  @default(now()) @db.Timestamptz(3)
+
+  schema EvalSchema?   @relation(fields: [schema_id], references: [id], onDelete: SetNull)
+  items  BulkJobItem[]
+
+  @@index([created_at], map: "ix_bulk_jobs_created_at")
+  @@index([status], map: "ix_bulk_jobs_status")
+  @@map("bulk_jobs")
+}
+
+model BulkJobItem {
+  id            Int      @id @default(autoincrement())
+  job_id        Int
+  row_index     Int
+  state         Json
+  evaluation_id Int?
+  label         String?
+  predicted     String?
+  confidence    Float?
+  ok            Boolean
+  error         String?
+  created_at    DateTime @default(now()) @db.Timestamptz(3)
+
+  job        BulkJob     @relation(fields: [job_id], references: [id], onDelete: Cascade)
+  evaluation Evaluation? @relation(fields: [evaluation_id], references: [id], onDelete: SetNull)
+
+  @@index([job_id], map: "ix_bulk_job_items_job_id")
+  @@map("bulk_job_items")
+}
+
+model ABTest {
+  id            Int       @id @default(autoincrement())
+  name          String
+  schema_id     Int?
+  revision_a_id Int?
+  revision_b_id Int?
+  status        String
+  dataset       Json
+  summary       Json
+  error         String?
+  finished_at   DateTime? @db.Timestamptz(3)
+  created_at    DateTime  @default(now()) @db.Timestamptz(3)
+  updated_at    DateTime  @default(now()) @db.Timestamptz(3)
+
+  schema    EvalSchema?     @relation(fields: [schema_id], references: [id], onDelete: SetNull)
+  revisionA SchemaRevision? @relation("ABTestRevisionA", fields: [revision_a_id], references: [id], onDelete: SetNull)
+  revisionB SchemaRevision? @relation("ABTestRevisionB", fields: [revision_b_id], references: [id], onDelete: SetNull)
+
+  items ABTestItem[]
+
+  @@index([created_at], map: "ix_ab_tests_created_at")
+  @@index([status], map: "ix_ab_tests_status")
+  @@map("ab_tests")
+}
+
+model ABTestItem {
+  id           Int      @id @default(autoincrement())
+  test_id      Int
+  row_index    Int
+  state        Json
+  label        String?
+  choice_a     String?
+  choice_b     String?
+  confidence_a Float?
+  confidence_b Float?
+  flipped      Boolean
+  result_a     Json
+  result_b     Json
+  created_at   DateTime @default(now()) @db.Timestamptz(3)
+
+  test ABTest @relation(fields: [test_id], references: [id], onDelete: Cascade)
+
+  @@index([test_id], map: "ix_ab_test_items_test_id")
+  @@map("ab_test_items")
+}
+
+// =============================================================================
+// Part 2 — workflow automation
+// =============================================================================
+
+model Workflow {
+  id                Int      @id @default(autoincrement())
+  key               String   @unique(map: "ix_workflows_key")
+  name              String
+  description       String
+  enabled           Boolean
+  trigger_type      String
+  trigger_config    Json
+  schema_id         Int?
+  decision_question String?
+  steps             Json
+  auto_threshold    Float
+  verify_threshold  Float
+  created_at        DateTime @default(now()) @db.Timestamptz(3)
+  updated_at        DateTime @default(now()) @db.Timestamptz(3)
+
+  schema       EvalSchema?   @relation(fields: [schema_id], references: [id], onDelete: SetNull)
+  runs         WorkflowRun[]
+  review_items ReviewItem[]
+
+  @@index([created_at], map: "ix_workflows_created_at")
+  @@index([enabled], map: "ix_workflows_enabled")
+  @@map("workflows")
+}
+
+model WorkflowRun {
+  id              Int       @id @default(autoincrement())
+  workflow_id     Int
+  evaluation_id   Int?
+  status          String
+  route           String?
+  confidence      Float?
+  final_choice    String?
+  actions         Json
+  trigger_payload Json
+  error           String?
+  started_at      DateTime? @db.Timestamptz(3)
+  finished_at     DateTime? @db.Timestamptz(3)
+  created_at      DateTime  @default(now()) @db.Timestamptz(3)
+  updated_at      DateTime  @default(now()) @db.Timestamptz(3)
+
+  workflow   Workflow    @relation(fields: [workflow_id], references: [id], onDelete: Cascade)
+  evaluation Evaluation? @relation(fields: [evaluation_id], references: [id], onDelete: SetNull)
+
+  action_logs  ActionLog[]
+  review_items ReviewItem[]
+
+  @@index([created_at], map: "ix_workflow_runs_created_at")
+  @@index([route], map: "ix_workflow_runs_route")
+  @@index([route, created_at], map: "ix_workflow_runs_route_created")
+  @@index([status], map: "ix_workflow_runs_status")
+  @@index([workflow_id], map: "ix_workflow_runs_workflow_id")
+  @@map("workflow_runs")
+}
+
+model ActionLog {
+  id              Int      @id @default(autoincrement())
+  workflow_run_id Int?
+  kind            String
+  target          String
+  status          String
+  request         Json
+  response        Json
+  error           String?
+  latency_ms      Float
+  created_at      DateTime @default(now()) @db.Timestamptz(3)
+
+  run WorkflowRun? @relation(fields: [workflow_run_id], references: [id], onDelete: Cascade)
+
+  @@index([created_at], map: "ix_action_logs_created_at")
+  @@index([kind], map: "ix_action_logs_kind")
+  @@index([status], map: "ix_action_logs_status")
+  @@index([workflow_run_id], map: "ix_action_logs_workflow_run_id")
+  @@map("action_logs")
+}
+
+// =============================================================================
+// Part 4 — analytics, calibration and the review queue
+// =============================================================================
+
+model ReviewItem {
+  id               Int       @id @default(autoincrement())
+  workflow_id      Int?
+  workflow_run_id  Int?
+  evaluation_id    Int?
+  state            Json
+  state_text       String
+  question         String?
+  model_choice     String?
+  model_confidence Float?
+  alternatives     Json
+  reason           String
+  priority         Int
+  status           String
+  assignee         String?
+  corrected_label  String?
+  notes            String
+  resolved_at      DateTime? @db.Timestamptz(3)
+  created_at       DateTime  @default(now()) @db.Timestamptz(3)
+  updated_at       DateTime  @default(now()) @db.Timestamptz(3)
+
+  workflow    Workflow?    @relation(fields: [workflow_id], references: [id], onDelete: SetNull)
+  workflowRun WorkflowRun? @relation(fields: [workflow_run_id], references: [id], onDelete: SetNull)
+  evaluation  Evaluation?  @relation(fields: [evaluation_id], references: [id], onDelete: SetNull)
+
+  @@index([created_at], map: "ix_review_items_created_at")
+  @@index([priority], map: "ix_review_items_priority")
+  @@index([status], map: "ix_review_items_status")
+  @@index([status, priority], map: "ix_review_items_status_priority")
+  @@index([workflow_id], map: "ix_review_items_workflow_id")
+  @@map("review_items")
+}
+
+model CalibrationSnapshot {
+  id              Int      @id @default(autoincrement())
+  primitive       String
+  question        String
+  schema_id       Int?
+  n_samples       Int
+  slope           Float
+  intercept       Float
+  temperature     Float?
+  ece             Float?
+  mce             Float?
+  brier           Float?
+  accuracy        Float?
+  mean_confidence Float?
+  bins            Json
+  created_at      DateTime @default(now()) @db.Timestamptz(3)
+
+  schema EvalSchema? @relation(fields: [schema_id], references: [id], onDelete: SetNull)
+
+  @@index([created_at], map: "ix_calibration_snapshots_created_at")
+  @@index([primitive], map: "ix_calibration_snapshots_primitive")
+  @@index([question], map: "ix_calibration_snapshots_question")
+  @@index([schema_id], map: "ix_calibration_snapshots_schema_id")
+  @@map("calibration_snapshots")
+}

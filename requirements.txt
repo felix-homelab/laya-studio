@@ -1,0 +1,39 @@
+# Laya Studio runtime.
+#
+# Two hard dependencies, neither optional:
+#
+#   * Laya — there is no fallback engine, so the panel cannot serve a decision
+#     without it. `laya` pulls its own torch and transformers, which is where
+#     almost all of the install size lives (~800 MB of weights on first use).
+#   * PostgreSQL — there is no SQLite path. The schema is owned by Prisma's
+#     migrations; see prisma/schema.prisma and docs/data-model.md.
+
+# --- panel -------------------------------------------------------------------
+fastapi>=0.110
+uvicorn[standard]>=0.27
+jinja2>=3.1
+python-multipart>=0.0.9
+sqlalchemy>=2.0
+psycopg[binary]>=3.2
+httpx>=0.27
+pydantic>=2.5
+
+# --- inference ---------------------------------------------------------------
+# Verified against laya 0.3.5 / torch 2.14 / transformers 5.17.
+laya>=0.3.5
+
+# --- observability & MCP ------------------------------------------------------
+# The panel serves its own tool surface at /mcp over the Model Context Protocol,
+# and the MCP SDK's Streamable HTTP transport is what serves it. 2.x is required:
+# it renamed FastMCP to MCPServer, which app/mcp/server.py is written against.
+mcp>=2,<3
+
+# Pin these explicitly to control the wheel you get — in particular to pick a
+# CUDA build of torch rather than the CPU one the resolver would choose:
+#   pip install --index-url https://download.pytorch.org/whl/cu124 torch
+# torch>=2.2
+# transformers>=4.44
+
+# --- optional: development only ---------------------------------------------
+# pytest>=8.0
+# ruff>=0.4

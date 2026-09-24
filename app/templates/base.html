@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ app_name }}{% endblock %} · {{ app_name }}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+  <link rel="stylesheet" href="{{ asset('css/app.css') }}">
+</head>
+<body class="h-full bg-slate-950 text-slate-200 antialiased">
+{% from "_macros.html" import icon, badge, band_chip %}
+
+<div class="flex min-h-screen">
+
+  {# ---------------------------------------------------------------- sidebar #}
+  <aside class="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-slate-800 bg-slate-900/40 lg:flex xl:w-72">
+    <div class="flex items-center gap-2.5 px-5 py-5">
+      <div class="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-sky-500 to-indigo-600 text-white">
+        {{ icon("bolt", "w-4 h-4") }}
+      </div>
+      <div class="leading-tight">
+        <p class="text-sm font-semibold text-slate-100">{{ app_name }}</p>
+        <p class="text-[11px] text-slate-500">v{{ app_version }}</p>
+      </div>
+    </div>
+
+    <nav class="min-h-0 flex-1 space-y-1 overflow-y-auto px-3">
+      {% for item in nav_items %}
+      <a href="{{ item.href }}"
+         class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition
+                {% if active == item.label %}bg-slate-800 text-slate-100 font-medium{% else %}text-slate-400 hover:bg-slate-800/60 hover:text-slate-200{% endif %}">
+        {{ icon(item.icon, "w-4 h-4") }}
+        <span>{{ item.label }}</span>
+      </a>
+      {% endfor %}
+    </nav>
+
+    <div class="shrink-0 space-y-3 border-t border-slate-800 p-4">
+      {% if engine_state == "ready" %}
+      <div class="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
+        <p class="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300">
+          {{ icon("check", "w-3.5 h-3.5") }} Laya runtime
+        </p>
+        <dl class="mt-1.5 space-y-0.5 text-[11px] leading-snug text-emerald-200/80">
+          <div class="flex justify-between gap-2">
+            <dt>device</dt><dd class="font-mono">{{ engine_info.device or "auto" }}</dd>
+          </div>
+          <div class="flex justify-between gap-2">
+            <dt>checkpoints</dt>
+            <dd class="truncate font-mono" title="{{ engine_info.loaded_checkpoints|join(', ') }}">
+              {{ engine_info.loaded_checkpoints|join(', ') if engine_info.loaded_checkpoints else "lazy" }}
+            </dd>
+          </div>
+          {% if engine_info.duration_seconds %}
+          <div class="flex justify-between gap-2">
+            <dt>loaded in</dt><dd class="font-mono">{{ engine_info.duration_seconds }}s</dd>
+          </div>
+          {% endif %}
+        </dl>
+      </div>
+      {% elif engine_state == "failed" %}
+      <div class="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3">
+        <p class="flex items-center gap-1.5 text-[11px] font-semibold text-rose-300">
+          {{ icon("alert", "w-3.5 h-3.5") }} Engine unavailable
+        </p>
+        <p class="mt-1 text-[11px] leading-snug text-rose-200/80">
+          {{ engine_error or "Laya could not be loaded." }}
+        </p>
+      </div>
+      {% else %}
+      <div class="rounded-xl border border-sky-500/30 bg-sky-500/10 p-3">
+        <p class="flex items-center gap-1.5 text-[11px] font-semibold text-sky-300">
+          <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400"></span> Loading Laya
+        </p>
+        <p class="mt-1 text-[11px] leading-snug text-sky-200/80">
+          The panel is up; evaluations return 503 until the checkpoints finish
+          loading. A cold cache downloads several hundred megabytes.
+        </p>
+      </div>
+      {% endif %}
+
+      <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-[11px] text-slate-400">
+        <p class="flex items-center justify-between">
+          <span>Act ≥</span><span class="font-mono text-slate-300">{{ auto_threshold|pct(0) }}</span>
+        </p>
+        <p class="mt-1 flex items-center justify-between">
+          <span>Verify ≥</span><span class="font-mono text-slate-300">{{ verify_threshold|pct(0) }}</span>
+        </p>
+        <p class="mt-1 flex items-center justify-between">
+          <span>Fallback</span>
+          <span class="font-mono text-slate-300">{{ llm_provider if llm_enabled else "off" }}</span>
+        </p>
+      </div>
+
+      <a href="/api/docs" class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[11px] text-slate-500 hover:text-slate-300">
+        {{ icon("book", "w-3.5 h-3.5") }} API reference
+      </a>
+    </div>
+  </aside>
+
+  {# ------------------------------------------------------------------ main #}
+  <div class="flex min-w-0 flex-1 flex-col">
+
+    <header class="sticky top-0 z-20 flex items-center gap-4 border-b border-slate-800 bg-slate-950/85 px-4 py-3 backdrop-blur sm:px-6 lg:px-8 2xl:px-10">
+      <div class="flex items-center gap-2 lg:hidden">
+        <div class="grid h-7 w-7 place-items-center rounded-md bg-gradient-to-br from-sky-500 to-indigo-600 text-white">
+          {{ icon("bolt", "w-3.5 h-3.5") }}
+        </div>
+        <span class="text-sm font-semibold">{{ app_name }}</span>
+      </div>
+
+      <div class="min-w-0 flex-1">
+        <h1 class="truncate text-sm font-semibold text-slate-100">{% block heading %}{{ active }}{% endblock %}</h1>
+        <p class="truncate text-xs text-slate-500">{% block subheading %}Laya typed-decision studio{% endblock %}</p>
+      </div>
+
+      <div class="hidden items-center gap-2 text-xs text-slate-500 sm:flex">
+        {% set dot = 'bg-emerald-400' if engine_state == 'ready' else ('bg-rose-400' if engine_state == 'failed' else 'bg-sky-400 animate-pulse') %}
+        <span class="h-1.5 w-1.5 rounded-full {{ dot }}"></span>
+        <span>{{ engine_info.name }}{% if engine_info.device %} · {{ engine_info.device }}{% endif %}</span>
+      </div>
+    </header>
+
+    <nav class="flex gap-1 overflow-x-auto border-b border-slate-800 px-4 py-2 sm:px-6 lg:hidden">
+      {% for item in nav_items %}
+      <a href="{{ item.href }}"
+         class="whitespace-nowrap rounded-lg px-3 py-1.5 text-xs
+                {% if active == item.label %}bg-slate-800 text-slate-100{% else %}text-slate-400{% endif %}">{{ item.label }}</a>
+      {% endfor %}
+    </nav>
+
+    <main class="w-full flex-1 px-4 py-6 sm:px-6 lg:px-8 2xl:px-10">
+      {% if engine_state == "loading" or engine_state == "pending" %}
+      <div id="engine-banner" class="mb-5 rounded-2xl border border-sky-500/30 bg-sky-500/10 px-5 py-4">
+        <p class="flex items-center gap-2 text-sm font-semibold text-sky-200">
+          <span class="h-2 w-2 animate-pulse rounded-full bg-sky-400"></span>
+          Laya is still loading
+        </p>
+        <p class="mt-1 text-xs leading-relaxed text-sky-200/80">
+          The checkpoints are being downloaded or loaded into memory. Everything on this
+          page works; anything that needs a decision will return
+          <span class="font-mono">503</span> with a
+          <span class="font-mono">Retry-After</span> header until it finishes. On a cold
+          cache this is a several-hundred-megabyte download, so give it a few minutes.
+          This banner disappears on its own.
+        </p>
+      </div>
+      {% elif engine_state == "failed" %}
+      <div class="mb-5 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-5 py-4">
+        <p class="text-sm font-semibold text-rose-200">Laya could not be loaded</p>
+        <pre class="mt-2 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-rose-200/80">{{ engine_error }}</pre>
+        <p class="mt-2 text-xs text-rose-200/80">
+          Run <span class="font-mono">laya-studio check</span> to diagnose the environment.
+        </p>
+      </div>
+      {% endif %}
+
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="border-t border-slate-800 px-4 py-3 text-[11px] text-slate-600 sm:px-6 lg:px-8 2xl:px-10">
+      {{ app_name }} v{{ app_version }} · {{ environment }} · engine
+      <span class="font-mono">{{ engine_info.name }}</span>
+    </footer>
+  </div>
+</div>
+
+<div id="toast-root" class="pointer-events-none fixed bottom-5 right-5 z-50 flex flex-col gap-2"></div>
+
+<script src="{{ asset('js/app.js') }}"></script>
+<script src="{{ asset('js/ui.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

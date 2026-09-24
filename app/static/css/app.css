@@ -1,0 +1,146 @@
+/* Small additions Tailwind's CDN build does not give us out of the box. */
+
+html {
+  color-scheme: dark;
+  scroll-behavior: smooth;
+}
+
+/* The shell fills the viewport edge to edge. Clip (not hidden) the horizontal
+   overflow so a stray wide element cannot introduce a sideways scrollbar: clip
+   does not create a scroll container, so the sticky sidebar and header keep
+   working. */
+body {
+  overflow-x: clip;
+}
+
+/* Slim scrollbars that match the panel chrome. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: #334155;
+  border-radius: 9999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: #475569;
+}
+
+/* Panels are fluid: they stretch to their grid cell and never force the shell
+   wider than the viewport. min-width:0 lets them shrink inside flex/grid tracks
+   instead of overflowing. */
+main section,
+main article {
+  min-width: 0;
+}
+
+/* Card-like panels settle smoothly — between hover, mount and resize — rather
+   than snapping to the new size or colour. */
+main section,
+main article {
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+/* Server-rendered pages fill in before the JS runs. */
+[data-loading] {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Probability bars animate in rather than snapping. */
+.prob-bar > span {
+  transition: width 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+textarea {
+  field-sizing: content;
+}
+
+/* --- custom dropdowns, blocks and chips (static/js/ui.js) ----------------- */
+
+/* The native control stays in the DOM as the source of truth for page code,
+   but it is never the thing the user sees or clicks. */
+select.laya-select-source {
+  display: none !important;
+}
+
+/* Small uppercase field captions used inside the block and question editors. */
+.laya-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+/* Scratch-style script: a rail down the left of every route stack, and a drag
+   affordance that reads as "pick this block up". */
+.laya-stack {
+  position: relative;
+}
+.laya-stack::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: 9999px;
+  background: rgb(51 65 85 / 0.9);
+}
+.laya-block {
+  transition:
+    box-shadow 140ms ease,
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+.laya-block:hover {
+  transform: translateX(1px);
+}
+.laya-block[draggable="true"] [data-grip] {
+  cursor: grab;
+}
+.laya-block.laya-dragging {
+  opacity: 0.4;
+}
+.laya-block.laya-drop {
+  box-shadow: 0 0 0 2px rgb(14 165 233 / 0.75);
+}
+.laya-stack.laya-drop {
+  border-radius: 0.75rem;
+  box-shadow: inset 0 0 0 2px rgb(14 165 233 / 0.45);
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.toast {
+  animation: toast-in 160ms ease-out;
+}
+
+/* Respect users who ask the OS for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,326 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, empty, stat %}
+
+{% block title %}Analytics{% endblock %}
+{% block heading %}Confidence dashboard{% endblock %}
+{% block subheading %}Certainty trends, escalation rates and expected calibration error{% endblock %}
+
+{% macro pct(v) %}{{ v|pct(1) if v is not none else '—' }}{% endmacro %}
+
+{% block content %}
+{% set o = data.overview %}
+{% set c = data.calibration %}
+{% set r = data.routes %}
+
+{# ------------------------------------------------------------- filter bar #}
+<div class="mb-5 flex flex-wrap items-center gap-2">
+  <div class="flex gap-1 rounded-xl border border-slate-800 bg-slate-900/60 p-1">
+    {% for window_hours, label in [(24, '24h'), (168, '7d'), (720, '30d'), (2160, '90d')] %}
+    <a href="/analytics?hours={{ window_hours }}&bucket={{ bucket }}"
+       class="rounded-lg px-3 py-1.5 text-xs font-medium {{ 'bg-slate-800 text-slate-100' if window_hours == hours else 'text-slate-400 hover:text-slate-200' }}">
+      {{ label }}
+    </a>
+    {% endfor %}
+  </div>
+  <div class="flex gap-1 rounded-xl border border-slate-800 bg-slate-900/60 p-1">
+    {% for value in ['hour', 'day'] %}
+    <a href="/analytics?hours={{ hours }}&bucket={{ value }}"
+       class="rounded-lg px-3 py-1.5 text-xs font-medium {{ 'bg-slate-800 text-slate-100' if bucket == value else 'text-slate-400 hover:text-slate-200' }}">
+      per {{ value }}
+    </a>
+    {% endfor %}
+  </div>
+  <span class="ml-auto text-[11px] text-slate-500">
+    engine <span class="font-mono text-slate-400">{{ engine_info.name }}</span>
+    · act ≥ {{ auto_threshold|pct(0) }} · verify ≥ {{ verify_threshold|pct(0) }}
+  </span>
+</div>
+
+{% if o.total %}
+{# ------------------------------------------------------------- stat cards #}
+<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
+  {{ stat("Evaluations", o.total, o.window.hours ~ "h window") }}
+  {{ stat("Auto rate", pct(o.auto_rate), "at or above the act threshold", "text-emerald-300") }}
+  {{ stat("Verify rate", pct(o.verify_rate), "middle band", "text-amber-300") }}
+  {{ stat("Escalation rate", pct(o.escalation_rate), "sent to humans", "text-rose-300") }}
+  {{ stat("Mean confidence", pct(o.confidence.mean), "median " ~ pct(o.confidence.median)) }}
+  {{ stat("Mean latency", (o.latency_ms.mean|num(1)) ~ " ms", "p95 " ~ (o.latency_ms.p95|num(1)) ~ " ms") }}
+</div>
+
+<div class="mt-5 grid gap-5 xl:grid-cols-2">
+
+  {# ------------------------------------------------------------- histogram #}
+  <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+    <h2 class="text-sm font-semibold text-slate-100">Confidence distribution</h2>
+    <p class="mt-0.5 text-xs text-slate-400">
+      Where the model's certainty lands. The act-vs-escalate bands are shaded from the live thresholds.
+    </p>
+    <div class="mt-4 flex h-40 items-end gap-1">
+      {% for bin in data.histogram %}
+      {% set tone = 'bg-emerald-500/70' if bin.band == 'auto' else 'bg-amber-500/70' if bin.band == 'verify' else 'bg-rose-500/70' %}
+      {% set peak = (data.histogram | map(attribute='count') | max) or 1 %}
+      <div class="group relative flex-1" title="{{ bin.lower|pct(0) }}–{{ bin.upper|pct(0) }}: {{ bin.count }} ({{ bin.share|pct(1) }})">
+        <div class="{{ tone }} w-full rounded-t transition group-hover:opacity-100 opacity-85"
+             style="height: {{ ((bin.count / peak) * 140) if peak else 0 }}px"></div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="mt-2 flex justify-between text-[10px] text-slate-600">
+      <span>0%</span><span>50%</span><span>100%</span>
+    </div>
+    <div class="mt-3 flex flex-wrap gap-3 text-[11px] text-slate-500">
+      <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-emerald-500/70"></span>act {{ o.bands.auto }}</span>
+      <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-amber-500/70"></span>verify {{ o.bands.verify }}</span>
+      <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-rose-500/70"></span>review {{ o.bands.review }}</span>
+    </div>
+  </section>
+
+  {# ------------------------------------------------------------- timeseries #}
+  <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+    <h2 class="text-sm font-semibold text-slate-100">Volume over time</h2>
+    <p class="mt-0.5 text-xs text-slate-400">Evaluations per {{ bucket }}, stacked by routing band.</p>
+    {% if data.timeseries %}
+    {% set peak = (data.timeseries | map(attribute='count') | max) or 1 %}
+    <div class="mt-4 flex h-40 items-end gap-1">
+      {% for point in data.timeseries %}
+      <div class="group relative flex-1"
+           title="{{ point.bucket[5:16] }} · {{ point.count }} eval · escalation {{ point.escalation_rate|pct(0) }}">
+        <div class="flex w-full flex-col justify-end overflow-hidden rounded-t" style="height: 140px">
+          <div class="bg-rose-500/70" style="height: {{ (point.review / peak) * 140 }}px"></div>
+          <div class="bg-amber-500/70" style="height: {{ (point.verify / peak) * 140 }}px"></div>
+          <div class="bg-emerald-500/70" style="height: {{ (point.auto / peak) * 140 }}px"></div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="mt-2 flex justify-between text-[10px] text-slate-600">
+      <span>{{ data.timeseries[0].bucket[5:16] }}</span>
+      <span>{{ data.timeseries[-1].bucket[5:16] }}</span>
+    </div>
+    {% else %}
+    <p class="mt-8 text-center text-xs text-slate-500">No evaluations in this window.</p>
+    {% endif %}
+  </section>
+
+  {# ---------------------------------------------------------- route + model #}
+  <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+    <h2 class="text-sm font-semibold text-slate-100">Workflow routes</h2>
+    <p class="mt-0.5 text-xs text-slate-400">{{ r.runs }} run(s) in this window.</p>
+    <div class="mt-4 space-y-3">
+      {% set route_total = (r.by_route.values() | sum) or 1 %}
+      {% for route in ['auto', 'verify', 'review', 'error'] %}
+      {% set count = r.by_route.get(route, 0) %}
+      {% set tone = 'bg-emerald-500' if route == 'auto' else 'bg-amber-500' if route == 'verify' else 'bg-rose-500' if route == 'review' else 'bg-slate-500' %}
+      <div>
+        <div class="flex items-baseline justify-between text-[11px]">
+          <span class="text-slate-400">{{ route }}</span>
+          <span class="font-mono text-slate-300">{{ count }} · {{ (count / route_total)|pct(0) }}</span>
+        </div>
+        <div class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+          <div class="h-full rounded-full {{ tone }}" style="width: {{ (count / route_total) * 100 }}%"></div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="mt-5 grid grid-cols-2 gap-3 text-[11px]">
+      <div class="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+        <p class="text-slate-500">Action outcomes</p>
+        <p class="mt-1 text-slate-300">
+          {% for key, value in r.action_outcomes.items() %}
+          <span class="mr-2 font-mono">{{ key }}: {{ value }}</span>
+          {% else %}—{% endfor %}
+        </p>
+      </div>
+      <div class="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+        <p class="text-slate-500">Review corrections</p>
+        <p class="mt-1 text-slate-300">
+          {{ r.review_open }} open · {{ r.correction_rate|pct(0) if r.correction_rate is not none else "—" }} correction rate
+        </p>
+      </div>
+    </div>
+
+    <div class="mt-5">
+      <p class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Most common answers</p>
+      <div class="mt-2 flex flex-wrap gap-1.5">
+        {% for row in o.top_choices %}
+        <span class="rounded-full bg-slate-800 px-2.5 py-1 text-[11px] text-slate-300">
+          {{ row.label }} <span class="font-mono text-slate-500">{{ row.count }}</span>
+        </span>
+        {% else %}
+        <span class="text-[11px] text-slate-500">No predictions recorded.</span>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+
+  {# ------------------------------------------------------------ calibration #}
+  <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-100">Calibration monitor</h2>
+        <p class="mt-0.5 text-xs text-slate-400">Stated confidence vs observed accuracy on labelled rows.</p>
+      </div>
+      <button type="button" id="refit-btn"
+        class="flex items-center gap-1.5 rounded-lg border border-slate-800 px-2.5 py-1.5 text-xs text-slate-400 hover:text-slate-200">
+        {{ icon("refresh", "w-3.5 h-3.5") }} Refit
+      </button>
+    </div>
+
+    {% if c.n_samples %}
+    <div class="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div class="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+        <p class="text-[11px] text-slate-500">ECE</p>
+        <p class="mt-0.5 font-mono text-lg {{ 'text-emerald-300' if c.ece < 0.05 else 'text-amber-300' if c.ece < 0.15 else 'text-rose-300' }}">{{ c.ece|num(3) }}</p>
+      </div>
+      <div class="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+        <p class="text-[11px] text-slate-500">Accuracy</p>
+        <p class="mt-0.5 font-mono text-lg text-slate-200">{{ pct(c.accuracy) }}</p>
+      </div>
+      <div class="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+        <p class="text-[11px] text-slate-500">Mean confidence</p>
+        <p class="mt-0.5 font-mono text-lg text-slate-200">{{ pct(c.mean_confidence) }}</p>
+      </div>
+      <div class="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+        <p class="text-[11px] text-slate-500">Brier</p>
+        <p class="mt-0.5 font-mono text-lg text-slate-200">{{ c.brier|num(3) }}</p>
+      </div>
+    </div>
+
+    <p class="mt-3 rounded-xl border border-slate-700 bg-slate-800/40 px-3.5 py-2.5 text-xs text-slate-300">
+      {{ c.interpretation }}
+    </p>
+
+    <p class="mt-4 text-[11px] font-medium uppercase tracking-wider text-slate-500">Reliability diagram</p>
+    <div class="mt-2 space-y-1.5">
+      {% for bin in c.bins %}
+      {% if bin.count %}
+      <div class="flex items-center gap-2">
+        <span class="w-16 shrink-0 text-right font-mono text-[10px] text-slate-500">{{ bin.lower|pct(0) }}–{{ bin.upper|pct(0) }}</span>
+        <span class="flex-1">
+          <span class="flex h-2 overflow-hidden rounded-full bg-slate-800">
+            <span class="h-full bg-sky-500" style="width: {{ bin.mean_confidence * 100 }}%"></span>
+          </span>
+          <span class="mt-0.5 flex h-2 overflow-hidden rounded-full bg-slate-800">
+            <span class="h-full bg-emerald-500" style="width: {{ bin.accuracy * 100 }}%"></span>
+          </span>
+        </span>
+        <span class="w-24 shrink-0 text-[10px] text-slate-500">
+          n={{ bin.count }} gap {{ bin.gap|num(3) }}
+        </span>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+    <div class="mt-2 flex gap-4 text-[11px] text-slate-500">
+      <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-sky-500"></span>stated confidence</span>
+      <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-emerald-500"></span>observed accuracy</span>
+    </div>
+
+    {% if snapshots %}
+    <p class="mt-5 text-[11px] font-medium uppercase tracking-wider text-slate-500">Fitted calibration maps</p>
+    <p class="mt-1 text-[11px] text-slate-500">
+      Laya Studio's own map, fitted on your labelled rows:
+      <span class="font-mono">p' = sigmoid(slope · logit(p) + intercept)</span>.
+      The intercept is what corrects an entropy-based confidence the checkpoint
+      cannot recentre on its own.
+    </p>
+    <div class="mt-2 overflow-hidden rounded-xl border border-slate-800">
+      <table class="w-full text-left text-[11px]">
+        <thead class="bg-slate-950/60 uppercase tracking-wider text-slate-500">
+          <tr>
+            <th class="px-3 py-2 font-medium">Question</th>
+            <th class="px-3 py-2 font-medium text-right">slope</th>
+            <th class="px-3 py-2 font-medium text-right">intercept</th>
+            <th class="px-3 py-2 font-medium text-right">n</th>
+            <th class="px-3 py-2 font-medium text-right">ECE</th>
+            <th class="px-3 py-2 font-medium text-right">Acc.</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800">
+          {% for snap in snapshots %}
+          <tr>
+            <td class="px-3 py-2 font-mono text-slate-300">{{ snap.question or '(schema-wide)' }}</td>
+            <td class="px-3 py-2 text-right font-mono text-slate-200">{{ snap.slope|num(3) }}</td>
+            <td class="px-3 py-2 text-right font-mono text-slate-200">{{ snap.intercept|num(3) }}</td>
+            <td class="px-3 py-2 text-right font-mono text-slate-500">{{ snap.n_samples }}</td>
+            <td class="px-3 py-2 text-right font-mono text-slate-400">{{ snap.ece|num(3) }}</td>
+            <td class="px-3 py-2 text-right font-mono text-slate-400">{{ pct(snap.accuracy) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if c.trend %}
+    <p class="mt-5 text-[11px] font-medium uppercase tracking-wider text-slate-500">ECE by day</p>
+    <div class="mt-2 space-y-1.5">
+      {% for point in c.trend %}
+      <div class="flex items-center gap-3 text-[11px]">
+        <span class="w-20 shrink-0 font-mono text-slate-500">{{ point.date }}</span>
+        <span class="flex-1"><span class="block h-1.5 rounded-full bg-slate-800"><span class="block h-full rounded-full {{ 'bg-emerald-500' if point.ece < 0.05 else 'bg-amber-500' if point.ece < 0.15 else 'bg-rose-500' }}" style="width: {{ [point.ece * 400, 100]|min }}%"></span></span></span>
+        <span class="w-40 shrink-0 text-right text-slate-400">
+          ECE {{ point.ece|num(3) }} · n={{ point.n }}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% else %}
+    <p class="mt-6 rounded-xl border border-dashed border-slate-800 px-4 py-8 text-center text-xs text-slate-500">
+      {{ c.note }}
+    </p>
+    {% endif %}
+  </section>
+</div>
+
+{% else %}
+{{ empty(o.note or "No evaluations yet", "Run something in the playground, or seed demo data with `laya-studio seed`.") }}
+{% endif %}
+
+{% if engine_info.configuration %}
+<section class="mt-5 rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+  <h2 class="text-sm font-semibold text-slate-100">Checkpoint calibration</h2>
+  <p class="mt-0.5 text-xs text-slate-400">
+    Laya fits a temperature per question type and option-count bucket, and applies it
+    before reporting a probability. These are the shipped values — the distributions
+    you see above are already corrected by them.
+  </p>
+
+  {% for name, config in engine_info.configuration.items() %}
+  <div class="mt-4">
+    <p class="text-xs font-medium text-slate-300">
+      {{ name }} <span class="text-slate-500">· max_len {{ config.max_len }} · head_max_len {{ config.head_max_len }}</span>
+    </p>
+    <div class="mt-2 flex flex-wrap gap-1.5">
+      {% for bucket, temperature in config.temperature_by_options.items() %}
+      <span class="rounded-full px-2.5 py-1 font-mono text-[11px]
+        {{ 'bg-rose-500/15 text-rose-300' if temperature < 0.5 or temperature > 5
+           else 'bg-slate-800 text-slate-300' }}"
+        title="{{ 'Outside the clamp range [0.5, 5], so the runtime clamps it and confidence from this bucket is uncalibrated' if temperature < 0.5 or temperature > 5 else 'Applied as shipped' }}">
+        {{ bucket }} = {{ temperature|num(4) }}
+      </span>
+      {% endfor %}
+    </div>
+    {% set out_of_range = config.temperature_by_options.values() | select('lt', 0.5) | list %}
+    {% if out_of_range %}
+    <p class="mt-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
+      One or more buckets ship a temperature outside Laya's clamp range, so the runtime
+      clamps them and warns that confidence from those buckets is uncalibrated. A
+      <span class="font-mono">choice</span> question with 11 or more options is affected.
+      The schema linter warns about this while you author.
+    </p>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+<div id="refit-output" class="mt-4"></div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ asset('js/analytics.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,134 @@
+"""Part 1 — bulk testing over uploaded CSV/JSON datasets."""
+
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..config import get_settings
+from ..db import get_db
+from ..models import BulkJob
+from ..schemas import BulkItemResponse, BulkJobDetail, BulkJobSummary
+from ..services import bulk as bulk_service
+from ..services import decision_schemas
+
+router = APIRouter(prefix="/api/bulk", tags=["bulk"])
+
+
+def _get_job(db: Session, job_id: int) -> BulkJob:
+    job = db.get(BulkJob, job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No bulk job {job_id}.")
+    return job
+
+
+@router.post("/upload", response_model=BulkJobDetail, status_code=status.HTTP_201_CREATED)
+async def upload(
+    file: Annotated[UploadFile, File(description="CSV or JSON dataset")],
+    schema_id: Annotated[int, Form()],
+    name: Annotated[str, Form()] = "",
+    state_column: Annotated[str | None, Form()] = None,
+    label_column: Annotated[str | None, Form()] = None,
+    model: Annotated[str | None, Form()] = None,
+    db: Session = Depends(get_db),
+) -> BulkJobDetail:
+    """Upload a dataset, score every row, and return the metrics plus a preview."""
+    settings = get_settings()
+    schema = decision_schemas.get_schema(db, schema_id)
+    if schema is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No schema {schema_id}.")
+
+    content = await file.read()
+    if len(content) > settings.max_upload_bytes:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"Upload exceeds {settings.max_upload_mb} MB "
+            "(raise LAYA_STUDIO_MAX_UPLOAD_MB to allow larger files).",
+        )
+
+    try:
+        dataset = bulk_service.parse_dataset(content, file.filename or "")
+        job = bulk_service.create_job(
+            db,
+            name=name or (file.filename or "Bulk run"),
+            content=content,
+            filename=file.filename or "",
+            schema=schema,
+            state_column=state_column or None,
+            label_column=label_column or None,
+            model=model or None,
+        )
+        bulk_service.attach_rows(db, job, dataset)
+        bulk_service.run_job(db, job)
+    except bulk_service.BulkError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    db.refresh(job)
+    return BulkJobDetail.model_validate(job)
+
+
+@router.get("/jobs", response_model=list[BulkJobSummary])
+def list_jobs(
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> list[BulkJobSummary]:
+    rows = db.scalars(select(BulkJob).order_by(BulkJob.created_at.desc()).limit(limit))
+    return [BulkJobSummary.model_validate(row) for row in rows]
+
+
+@router.get("/jobs/{job_id}", response_model=BulkJobDetail)
+def get_job(
+    job_id: int,
+    include_items: bool = True,
+    item_limit: int = Query(default=200, ge=1, le=2000),
+    db: Session = Depends(get_db),
+) -> BulkJobDetail:
+    job = _get_job(db, job_id)
+    detail = BulkJobDetail.model_validate(job)
+    if include_items:
+        detail.items = [
+            BulkItemResponse.model_validate(item) for item in job.items[:item_limit]
+        ]
+    return detail
+
+
+@router.get("/jobs/{job_id}/items", response_model=list[BulkItemResponse])
+def list_items(
+    job_id: int,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=2000),
+    db: Session = Depends(get_db),
+) -> list[BulkItemResponse]:
+    from ..models import BulkJobItem
+
+    _get_job(db, job_id)
+    rows = db.scalars(
+        select(BulkJobItem)
+        .where(BulkJobItem.job_id == job_id)
+        .order_by(BulkJobItem.row_index)
+        .offset(offset)
+        .limit(limit)
+    )
+    return [BulkItemResponse.model_validate(row) for row in rows]
+
+
+@router.post("/jobs/{job_id}/rerun", response_model=BulkJobDetail)
+def rerun_job(job_id: int, db: Session = Depends(get_db)) -> BulkJobDetail:
+    """Re-score every row, for example after a calibration refit."""
+    job = _get_job(db, job_id)
+    try:
+        bulk_service.run_job(db, job)
+    except bulk_service.BulkError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    db.refresh(job)
+    return BulkJobDetail.model_validate(job)
+
+
+@router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_job(job_id: int, db: Session = Depends(get_db)) -> None:
+    job = _get_job(db, job_id)
+    db.delete(job)
+    db.commit()

@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, empty, status_chip %}
+
+{% block title %}Workflows{% endblock %}
+{% block heading %}Workflow automation{% endblock %}
+{% block subheading %}Build the ladder as a script — triggers, confidence bands, and every action each run took{% endblock %}
+
+{% block content %}
+<div class="grid gap-5 xl:grid-cols-[minmax(0,520px)_minmax(0,1fr)]">
+
+  <div class="space-y-5">
+    <form id="workflow-form" class="rounded-2xl border border-slate-800 bg-slate-900/60">
+      <header class="border-b border-slate-800 px-5 py-3">
+        <h2 id="wf-form-title" class="text-sm font-semibold text-slate-100">New workflow</h2>
+        <p class="mt-0.5 text-xs text-slate-400">
+          Snap blocks onto each rung of the confidence ladder. No JSON — pick a block,
+          fill in its fields, drag it where you want it.
+        </p>
+      </header>
+      <div class="space-y-4 p-5">
+        <label class="block">
+          <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Name</span>
+          <input id="wf-name" placeholder="Inbound email triage"
+            class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-2 text-sm text-slate-200 outline-none focus:border-sky-600">
+        </label>
+
+        <label class="block">
+          <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Description</span>
+          <textarea id="wf-description" rows="2"
+            class="mt-1 w-full resize-y rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-sky-600"></textarea>
+        </label>
+
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block">
+            <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Schema</span>
+            <select id="wf-schema" aria-label="Schema this workflow evaluates"
+              class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-600">
+              {% for schema in schemas %}<option value="{{ schema.id }}">{{ schema.name }}</option>{% endfor %}
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Routing question</span>
+            <select id="wf-question" aria-label="Question that decides the route"
+              class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-600">
+              <option value="">auto (first choice question)</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+          <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Confidence ladder</span>
+          <div class="mt-2 grid grid-cols-2 gap-3">
+            <label class="block">
+              <span class="laya-label">Act at or above</span>
+              <input id="wf-auto" type="number" min="0" max="1" step="0.05" value="0.9"
+                class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-sky-600">
+            </label>
+            <label class="block">
+              <span class="laya-label">Verify at or above</span>
+              <input id="wf-verify" type="number" min="0" max="1" step="0.05" value="0.6"
+                class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-sky-600">
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <div class="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+            <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Script</span>
+            <span id="wf-script-summary" class="text-[11px] text-slate-500"></span>
+          </div>
+
+          {# The hat block: what starts the script. #}
+          <div class="rounded-t-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-[10px] font-semibold uppercase tracking-wider text-amber-300/80">when</span>
+              <select id="wf-trigger" aria-label="What starts this workflow"
+                class="rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs font-semibold text-amber-100 outline-none">
+                <option value="api">an API call arrives</option>
+                <option value="webhook">an inbound webhook fires</option>
+                <option value="email">a forwarded email arrives</option>
+                <option value="manual">someone runs it by hand</option>
+              </select>
+              <span class="text-[11px] text-amber-200/70">with a state → walk the ladder</span>
+            </div>
+          </div>
+
+          <div id="wf-blocks" class="rounded-b-xl border border-t-0 border-slate-800 bg-slate-950/40 p-3"></div>
+        </div>
+
+        <div class="flex gap-2">
+          <button type="submit" id="wf-save"
+            class="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-sky-600 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-500">Save workflow</button>
+          <button type="button" id="wf-reset"
+            class="rounded-xl border border-slate-800 px-3 py-2 text-xs text-slate-400 hover:text-slate-200">New</button>
+        </div>
+      </div>
+    </form>
+
+    <section class="rounded-2xl border border-slate-800 bg-slate-900/60">
+      <header class="border-b border-slate-800 px-5 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">Workflows</h2>
+      </header>
+      <div id="wf-list" class="divide-y divide-slate-800">
+        {% for workflow in workflows %}
+        <div class="flex items-center gap-3 px-5 py-3">
+          <button type="button" data-workflow-id="{{ workflow.id }}" class="min-w-0 flex-1 text-left">
+            <span class="block truncate text-xs text-slate-300">{{ workflow.name }}</span>
+            <span class="mt-0.5 block font-mono text-[11px] text-slate-500">
+              {{ workflow.key }} · {{ workflow.trigger_type }} · {{ workflow.steps|length }} step{{ '' if workflow.steps|length == 1 else 's' }}
+            </span>
+          </button>
+          {% if not workflow.enabled %}{{ badge("disabled", "bg-slate-700/50 text-slate-400") }}{% endif %}
+          <button type="button" data-toggle-workflow="{{ workflow.id }}" data-enabled="{{ 'true' if workflow.enabled else 'false' }}"
+            class="rounded-lg border border-slate-800 px-2 py-1 text-[11px] text-slate-400 hover:text-slate-200">
+            {{ "disable" if workflow.enabled else "enable" }}
+          </button>
+          <button type="button" data-run-workflow="{{ workflow.id }}"
+            class="rounded-lg bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700">run</button>
+        </div>
+        {% else %}
+        <p class="px-5 py-6 text-center text-xs text-slate-500">No workflows yet.</p>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+
+  <div class="space-y-5">
+    <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-100">Run a workflow</h2>
+          <p class="mt-0.5 text-xs text-slate-400">
+            Same path an inbound webhook takes — the confidence ladder, the fallback and the actions.
+          </p>
+        </div>
+        <select id="run-workflow-select" aria-label="Workflow to run"
+          class="rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-600">
+          {% for workflow in workflows %}<option value="{{ workflow.id }}">{{ workflow.name }}</option>{% endfor %}
+        </select>
+      </div>
+
+      <div id="run-state-editor" class="mt-3"></div>
+
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button type="button" id="run-dry"
+          class="rounded-xl border border-slate-800 px-3 py-2 text-xs text-slate-400 hover:text-slate-200">Dry run (route only)</button>
+        <button type="button" id="run-live"
+          class="flex-1 rounded-xl bg-sky-600 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-500">Run workflow</button>
+      </div>
+
+      <div id="run-output" class="mt-4"></div>
+
+      <div class="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+        <p class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Ingest endpoint</p>
+        <div class="mt-1.5 flex items-center gap-2">
+          <code id="ingest-url" class="min-w-0 flex-1 truncate rounded bg-slate-900 px-2 py-1 font-mono text-[11px] text-slate-300"></code>
+          <button type="button" id="copy-ingest" class="rounded border border-slate-800 px-2 py-1 text-[10px] text-slate-400 hover:text-slate-200">copy</button>
+        </div>
+        <p class="mt-1.5 text-[11px] text-slate-500">
+          POST <code class="font-mono">{"text": "..."}</code> or
+          <code class="font-mono">{"state": {...}}</code>
+          {% if ingest_token_required %}with an <code class="font-mono">X-Ingest-Token</code> header{% endif %}.
+        </p>
+      </div>
+    </section>
+
+    <section class="rounded-2xl border border-slate-800 bg-slate-900/60">
+      <header class="border-b border-slate-800 px-5 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">Recent runs</h2>
+        <p class="mt-0.5 text-xs text-slate-400">Newest first — click one to inspect its action log</p>
+      </header>
+      <div id="runs-list" class="divide-y divide-slate-800">
+        {% for run in runs %}
+        <button type="button" data-run-id="{{ run.id }}" class="flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-slate-800/40">
+          <span class="min-w-0 flex-1">
+            <span class="block truncate font-mono text-[11px] text-slate-500">run #{{ run.id }} · workflow {{ run.workflow_id }}</span>
+            <span class="mt-0.5 block text-xs text-slate-300">{{ run.final_choice or '—' }} · {{ run.confidence|pct }}</span>
+          </span>
+          <span class="shrink-0 rounded-full px-2 py-0.5 text-[11px]
+            {{ 'bg-emerald-500/15 text-emerald-300' if run.route == 'auto' else 'bg-amber-500/15 text-amber-300' if run.route == 'verify' else 'bg-rose-500/15 text-rose-300' if run.route == 'review' else 'bg-slate-700/40 text-slate-400' }}">
+            {{ run.route or '—' }}
+          </span>
+        </button>
+        {% else %}
+        <p class="px-5 py-6 text-center text-xs text-slate-500">No runs yet.</p>
+        {% endfor %}
+      </div>
+      <div id="run-detail" class="border-t border-slate-800"></div>
+    </section>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ asset('js/block-builder.js') }}"></script>
+<script src="{{ asset('js/workflows.js') }}"></script>
+{% endblock %}

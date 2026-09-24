@@ -1,0 +1,41 @@
+subject,body,truth
+Duplicate charge on invoice #4411,We were billed twice for the same seat this month. Please reverse the duplicate charge.,billing
+Refund not received,You confirmed a refund eight days ago and the money has not come back to our card.,billing
+Invoice amount looks wrong,The March invoice is 15 percent higher than the agreed rate. Can you correct it?,billing
+Charged after cancellation,We cancelled in January but were charged again in February. Please refund and stop the billing.,billing
+Update payment method,Our card expired. Where do I change the payment details on the account?,billing
+Proration question,How will we be charged if we add two seats halfway through the billing period?,billing
+Payment failed but card is fine,The invoice shows as unpaid but our bank confirms the payment went through.,billing
+Double billed for add-on,The analytics add-on was charged twice on the latest invoice.,billing
+Need a copy of last year invoices,Please send PDF invoice copies for every month of last year for our finance team.,billing
+Billing contact changed,Our finance contact has left. Please update the billing contact to ap@example.com.,billing
+API returns 500 on webhook delivery,Every webhook call has returned a 500 since this morning and our queue is backing up.,technical
+Production is down,Our integration stopped syncing entirely about two hours ago. Nothing is moving and we are losing orders.,technical
+Errors after the upgrade,Since the 2.1 release we see repeated system errors in the logs on the sync job.,technical
+Webhooks stopped arriving,We are no longer receiving any webhook events. The endpoint is healthy on our side.,technical
+Authentication failure on API,Our service account suddenly gets 401 on every request. The key has not changed.,technical
+Slow response times,API latency went from 80ms to over 3 seconds this week. Is there an outage?,technical
+Data export fails,The CSV export times out for any report longer than thirty days.,technical
+SSL certificate error,Our integration now fails with a certificate verification error after your change.,technical
+Bug in the reporting view,The totals column shows the wrong number when a filter is applied.,technical
+Integration cannot connect,The connector reports a system error at the authentication step and never completes.,technical
+Pricing for the enterprise tier,Could you send over pricing for the enterprise contract with 200 seats?,sales
+Ready to upgrade,We would like to move from team to business and need a new contract.,sales
+Renewal questions,Our renewal is due next quarter. What are the options for a multi-year term?,sales
+Volume discount,We are considering 500 seats. Is there a volume discount available?,sales
+Demo request,Can we schedule a demo for our procurement and security team?,sales
+Competitor comparison,How does your pricing compare with the alternative we are evaluating?,sales
+Trial extension,Our evaluation period ends Friday. Can we extend it by two weeks before deciding?,sales
+New subsidiaries to add,We acquired two companies and want to add their teams to our contract.,sales
+Where is the documentation?,Where can I read the docs for the reporting feature?,other
+Thank you,"Thanks for the quick help yesterday, everything works now.",other
+Data retention policy,How long do you retain data for an account that has been closed?,other
+How do I invite a teammate?,I cannot find where to add a colleague to our workspace.,other
+Feature request,It would be useful to schedule recurring exports.,other
+Security questionnaire,Please send your standard security questionnaire responses.,other
+Not sure what this is about,"Forwarding this from a colleague, can someone take a look?",other
+URGENT,This needs attention immediately.,other
+Re: your message,Following up on the thread below. Any update?,other
+混同請求について,同じ月に二回請求されています。返金してください。,billing
+Konto wurde doppelt belastet,Mein Konto wurde zweimal belastet. Bitte erstatten Sie den Betrag.,billing
+Integration and invoice,Our integration broke and we were also charged twice. Please fix both before we cancel.,technical

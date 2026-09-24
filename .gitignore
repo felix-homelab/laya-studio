@@ -1,0 +1,56 @@
+# --- secrets ----------------------------------------------------------------
+# app/config.py loads a local .env at startup; it holds the database URL and the
+# ingest / MCP / observability tokens. Never commit it.
+.env
+.env.*
+!.env.example
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# --- Node / Prisma ----------------------------------------------------------
+# The Prisma CLI is a devDependency; package-lock.json is tracked, node_modules
+# is not. prisma/migrations is tracked — it is the schema's source of truth.
+node_modules/
+.prisma/
+
+# --- runtime data -----------------------------------------------------------
+# Runtime scratch: uploads, rotated JSONL logs and tracebacks. The app recreates
+# both directories on boot (app/config.py), and `make clean` wipes them anyway.
+data/
+
+# --- model weights ----------------------------------------------------------
+# Hugging Face cache (HF_HOME), populated by `docker compose up` (~1.4 GB) or by
+# `huggingface-cli download ... --local-dir ./models/...`. Rebuildable, not source.
+models/
+
+# --- containers -------------------------------------------------------------
+# The database lives in a named compose volume (laya-pgdata), so there is no
+# on-disk cluster to ignore — only local overrides.
+docker-compose.override.yml
+
+# --- OS / editor noise ------------------------------------------------------
+.DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# --- logs -------------------------------------------------------------------
+*.log

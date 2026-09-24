@@ -1,0 +1,153 @@
+# =============================================================================
+# Laya Studio
+#
+#   docker compose up --build
+#
+# PostgreSQL is required — there is no SQLite path — and the schema is owned by
+# Prisma's migrations, which the `migrate` service applies before the app starts.
+#
+# The panel is reachable within seconds. Laya loads in the background and the UI
+# says so; endpoints that need a decision return 503 with a Retry-After until the
+# checkpoints are resident. Mount a Hugging Face cache so the ~800 MB of weights
+# are fetched once rather than on every rebuild:
+#
+#   HF_CACHE=~/.cache/huggingface docker compose up --build
+#
+# Then open http://localhost:8000
+# =============================================================================
+
+name: laya-studio
+
+services:
+
+  # ------------------------------------------------------------------- db ---
+  db:
+    image: postgres:16-alpine
+    container_name: laya-studio-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-laya}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-laya}
+      POSTGRES_DB: ${POSTGRES_DB:-laya_studio}
+    volumes:
+      - laya-pgdata:/var/lib/postgresql/data
+    ports:
+      # Exposed so `npx prisma migrate dev` and `prisma studio` work from the host.
+      # Remove this mapping if the database should stay on the compose network only.
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-laya} -d ${POSTGRES_DB:-laya_studio}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [laya]
+
+  # -------------------------------------------------------------- migrate ---
+  # Applies Prisma's migrations and exits. The app waits for it to succeed, so the
+  # schema is never the application's problem to create.
+  #
+  # This is a separate service because it needs Node, and the application image
+  # deliberately does not carry a JavaScript runtime.
+  migrate:
+    build:
+      context: .
+      dockerfile: prisma/Dockerfile
+    image: laya-studio-migrate:latest
+    container_name: laya-studio-migrate
+    restart: "no"
+    environment:
+      LAYA_STUDIO_DATABASE_URL: postgresql://${POSTGRES_USER:-laya}:${POSTGRES_PASSWORD:-laya}@db:5432/${POSTGRES_DB:-laya_studio}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [laya]
+
+  # ----------------------------------------------------------------- app ---
+  app:
+    build:
+      context: .
+      args:
+        # Point at .../whl/cu124 for a CUDA build of torch.
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+    image: laya-studio:latest
+    container_name: laya-studio
+    restart: unless-stopped
+    ports:
+      - "${LAYA_STUDIO_PORT:-8000}:8000"
+    environment:
+      LAYA_STUDIO_ENVIRONMENT: production
+      LAYA_STUDIO_LOG_LEVEL: ${LAYA_STUDIO_LOG_LEVEL:-INFO}
+      LAYA_STUDIO_SECRET_KEY: ${LAYA_STUDIO_SECRET_KEY:-change-me-in-production}
+
+      LAYA_STUDIO_DATABASE_URL: postgresql://${POSTGRES_USER:-laya}:${POSTGRES_PASSWORD:-laya}@db:5432/${POSTGRES_DB:-laya_studio}
+
+      # Inference. Preloading keeps both auto-routed checkpoints resident, which
+      # is the difference between ~35 ms and a multi-second reload whenever the
+      # language changes. Costs roughly 2.4 GB of RAM. It happens in the
+      # background, so the panel is up while it runs.
+      LAYA_STUDIO_LAYA_PRELOAD: ${LAYA_STUDIO_LAYA_PRELOAD:-true}
+      LAYA_STUDIO_LAYA_DEVICE: ${LAYA_STUDIO_LAYA_DEVICE:-auto}
+      LAYA_STUDIO_LAYA_CACHE_DIR: /models
+
+      # Hybrid fallback. Set these in a .env file next to this compose file.
+      LAYA_STUDIO_LLM_PROVIDER: ${LAYA_STUDIO_LLM_PROVIDER:-none}
+      LAYA_STUDIO_OPENAI_API_KEY: ${LAYA_STUDIO_OPENAI_API_KEY:-}
+      LAYA_STUDIO_ANTHROPIC_API_KEY: ${LAYA_STUDIO_ANTHROPIC_API_KEY:-}
+      LAYA_STUDIO_AUTO_THRESHOLD: ${LAYA_STUDIO_AUTO_THRESHOLD:-0.90}
+      LAYA_STUDIO_VERIFY_THRESHOLD: ${LAYA_STUDIO_VERIFY_THRESHOLD:-0.60}
+
+      # Ingestion is the one public-facing surface; set a token before exposing it.
+      LAYA_STUDIO_INGEST_TOKEN: ${LAYA_STUDIO_INGEST_TOKEN:-}
+
+      # Observability. The panel writes rotated JSONL logs and tracebacks, served
+      # read-only from /api/observability/*.
+      LAYA_STUDIO_LOG_JSONL: ${LAYA_STUDIO_LOG_JSONL:-true}
+      LAYA_STUDIO_LOG_MAX_MB: ${LAYA_STUDIO_LOG_MAX_MB:-8}
+      LAYA_STUDIO_LOG_BACKUP_COUNT: ${LAYA_STUDIO_LOG_BACKUP_COUNT:-5}
+      LAYA_STUDIO_LOG_RETENTION_DAYS: ${LAYA_STUDIO_LOG_RETENTION_DAYS:-14}
+      LAYA_STUDIO_OBSERVABILITY_TOKEN: ${LAYA_STUDIO_OBSERVABILITY_TOKEN:-}
+
+      # The MCP endpoint at /mcp. It can create, run and delete the panel's data,
+      # so it warns loudly on startup until a token is set. Reaching the panel by
+      # a name other than localhost also needs that name in MCP_ALLOWED_HOSTS:
+      # the endpoint keeps DNS-rebinding protection on.
+      LAYA_STUDIO_MCP_ENABLED: ${LAYA_STUDIO_MCP_ENABLED:-true}
+      LAYA_STUDIO_MCP_TOKEN: ${LAYA_STUDIO_MCP_TOKEN:-}
+      LAYA_STUDIO_MCP_ALLOWED_HOSTS: ${LAYA_STUDIO_MCP_ALLOWED_HOSTS:-}
+    volumes:
+      # Upload scratch and the JSONL log store, bind-mounted rather than a named
+      # volume so the logs are readable from the host — `grep data/logs/*.jsonl`
+      # works without docker exec, which is the point of writing them at all.
+      - ./data:/app/data
+      # Weights cache. Without this every `--build` re-downloads ~800 MB.
+      - ${HF_CACHE:-./models}:/models
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # Uncomment and configure for GPU inference:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    healthcheck:
+      # Liveness: 200 as soon as the panel is serving, which is well before the
+      # checkpoints are loaded. Swap to /api/ready to gate on the engine instead.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks: [laya]
+
+volumes:
+  laya-pgdata:
+
+networks:
+  laya:
+    driver: bridge

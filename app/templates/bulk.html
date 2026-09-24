@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, empty, stat, status_chip %}
+
+{% block title %}Bulk testing{% endblock %}
+{% block heading %}Bulk testing{% endblock %}
+{% block subheading %}Upload a CSV or JSON dataset and score every row in one job{% endblock %}
+
+{% block content %}
+<div class="grid gap-5 xl:grid-cols-[minmax(0,400px)_minmax(0,1fr)]">
+
+  <div class="space-y-5">
+    <form id="upload-form" class="rounded-2xl border border-slate-800 bg-slate-900/60">
+      <header class="border-b border-slate-800 px-5 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">New batch</h2>
+        <p class="mt-0.5 text-xs text-slate-400">
+          CSV with a header row, or JSON as a list of objects. Add a label column to get
+          accuracy and ECE alongside the predictions.
+        </p>
+      </header>
+      <div class="space-y-4 p-5">
+        <label class="block">
+          <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Dataset</span>
+          <input id="file-input" type="file" accept=".csv,.json,text/csv,application/json" required
+            class="mt-1 w-full cursor-pointer rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300 file:mr-3 file:rounded file:border-0 file:bg-slate-800 file:px-2 file:py-1 file:text-xs file:text-slate-200">
+        </label>
+
+        <label class="block">
+          <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Schema</span>
+          <select id="schema-select"
+            class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-600">
+            {% for schema in schemas %}
+            <option value="{{ schema.id }}">{{ schema.name }}{% if schema.is_template %} · template{% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block">
+            <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Text column</span>
+            <input id="state-column" placeholder="auto (all columns)"
+              class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-600">
+          </label>
+          <label class="block">
+            <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Label column</span>
+            <input id="label-column" placeholder="none"
+              class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-600">
+          </label>
+        </div>
+        <p class="text-[11px] text-slate-500">
+          Pick the columns from the file — the list fills in as soon as the dataset is chosen,
+          and you can still type a name it has not seen yet.
+        </p>
+
+        <label class="block">
+          <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Name</span>
+          <input id="job-name" placeholder="optional"
+            class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-600">
+        </label>
+
+        <button type="submit" id="upload-btn"
+          class="flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-50">
+          {{ icon("upload", "w-4 h-4") }} Run batch
+        </button>
+        <p class="text-[11px] text-slate-500">
+          Runs synchronously and holds the request open. Rows run to 5,000; larger corpora
+          should use the API in slices.
+        </p>
+      </div>
+    </form>
+
+    <section class="rounded-2xl border border-slate-800 bg-slate-900/60">
+      <header class="border-b border-slate-800 px-5 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">Jobs</h2>
+      </header>
+      <div id="job-list" class="divide-y divide-slate-800">
+        {% for job in jobs %}
+        <button type="button" data-job-id="{{ job.id }}" class="flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-slate-800/40">
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-xs text-slate-300">{{ job.name }}</span>
+            <span class="mt-0.5 block text-[11px] text-slate-500">
+              {{ job.processed_rows }}/{{ job.total_rows }} rows ·
+              {{ job.summary.accuracy|pct if job.summary.accuracy is defined and job.summary.accuracy is not none else 'no labels' }}
+            </span>
+          </span>
+          {{ status_chip(job.status) }}
+        </button>
+        {% else %}
+        <p class="px-5 py-6 text-center text-xs text-slate-500">No jobs yet.</p>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+
+  <section id="job-detail" class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+    {{ empty("No job selected", "Upload a dataset, or pick a job on the left.") }}
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ asset('js/bulk.js') }}"></script>
+{% endblock %}

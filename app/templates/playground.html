@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, empty, card %}
+
+{% block title %}Playground{% endblock %}
+{% block heading %}Decision playground{% endblock %}
+{% block subheading %}Score a text state against typed questions in a single forward pass{% endblock %}
+
+{% block content %}
+<div class="grid gap-5 xl:grid-cols-[minmax(0,440px)_minmax(0,1fr)]">
+
+  {# ------------------------------------------------------------- the form #}
+  <form id="eval-form" class="space-y-4">
+    <section class="rounded-2xl border border-slate-800 bg-slate-900/60">
+      <header class="border-b border-slate-800 px-5 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">State</h2>
+        <p class="mt-0.5 text-xs text-slate-400">
+          Paste free text (an email, a ticket), or switch to fields and build a structured
+          state one key at a time. Structured states get routed on every field.
+        </p>
+      </header>
+      <div class="space-y-3 p-5">
+        <div id="state-editor"></div>
+
+        <div class="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+          <span class="text-slate-500">Load a sample</span>
+          <div class="flex gap-2">
+            <button type="button" data-sample="email" class="rounded-md border border-slate-800 px-2 py-1 text-slate-400 hover:text-slate-200">email sample</button>
+            <button type="button" data-sample="blocked" class="rounded-md border border-slate-800 px-2 py-1 text-slate-400 hover:text-slate-200">outage sample</button>
+            <button type="button" data-sample="multilingual" class="rounded-md border border-slate-800 px-2 py-1 text-slate-400 hover:text-slate-200">non-Latin sample</button>
+          </div>
+        </div>
+
+        <div id="route-preview" class="hidden rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] text-slate-400"></div>
+      </div>
+    </section>
+
+    <section class="rounded-2xl border border-slate-800 bg-slate-900/60">
+      <header class="border-b border-slate-800 px-5 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">Schema</h2>
+        <p class="mt-0.5 text-xs text-slate-400">Pick a saved schema, then tune the questions below.</p>
+      </header>
+      <div class="space-y-3 p-5">
+        <select id="schema-select" aria-label="Schema to evaluate against"
+          class="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-600">
+          {% for schema in schemas %}
+          <option value="{{ schema.id }}">{{ schema.name }}{% if schema.is_template %} · template{% endif %}</option>
+          {% endfor %}
+        </select>
+
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block">
+            <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Routing question</span>
+            <select id="primary-question" aria-label="Question that decides the headline result"
+              class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-600"></select>
+          </label>
+          <label class="block">
+            <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Checkpoint</span>
+            <select id="model-select" aria-label="Laya checkpoint"
+              class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-600">
+              <option value="">auto (route by script)</option>
+              <option value="english">english</option>
+              <option value="multilingual">multilingual</option>
+              <option value="typed-decisions">typed-decisions</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="flex items-center gap-2 text-xs text-slate-400">
+          <input id="apply-calibration" type="checkbox" checked
+                 class="h-3.5 w-3.5 rounded border-slate-700 bg-slate-950 text-sky-600">
+          Apply the fitted calibration map
+        </label>
+      </div>
+    </section>
+
+    <section class="rounded-2xl border border-slate-800 bg-slate-900/60">
+      <header class="border-b border-slate-800 px-5 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">Questions</h2>
+        <p class="mt-0.5 text-xs text-slate-400">
+          Add, retarget and reword the questions. Laya is asked all of them in one forward pass,
+          so keep the bundle small.
+        </p>
+      </header>
+      <div class="space-y-3 p-5">
+        <div id="questions-editor"></div>
+        <div id="lint-panel" class="space-y-1"></div>
+        <div class="flex gap-2">
+          <button type="button" id="reset-questions"
+            class="flex-1 rounded-lg border border-slate-800 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200">Reload from schema</button>
+          <button type="button" id="save-as-schema"
+            class="flex-1 rounded-lg border border-slate-800 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200">Save as new schema</button>
+        </div>
+      </div>
+    </section>
+
+    <button type="submit" id="evaluate-btn"
+      class="flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:opacity-50">
+      {{ icon("play", "w-4 h-4") }} Run evaluation
+    </button>
+  </form>
+
+  {# ---------------------------------------------------------- the results #}
+  <div class="space-y-5">
+    <section id="result-panel" class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+      {{ empty("No evaluation yet", "Fill in a state on the left and run it.") }}
+    </section>
+
+    <section class="rounded-2xl border border-slate-800 bg-slate-900/60">
+      <header class="flex items-center justify-between border-b border-slate-800 px-5 py-3">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-100">Recent runs</h2>
+          <p class="mt-0.5 text-xs text-slate-400">Playground history, newest first</p>
+        </div>
+        <button type="button" id="refresh-history"
+          class="flex items-center gap-1.5 rounded-lg border border-slate-800 px-2.5 py-1.5 text-xs text-slate-400 hover:text-slate-200">
+          {{ icon("refresh", "w-3.5 h-3.5") }} Refresh
+        </button>
+      </header>
+      <div id="history-list" class="divide-y divide-slate-800">
+        <p class="px-5 py-6 text-center text-xs text-slate-500">Nothing yet.</p>
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ asset('js/question-editor.js') }}"></script>
+<script src="{{ asset('js/playground.js') }}"></script>
+{% endblock %}

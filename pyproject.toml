@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "laya-studio"
+version = "0.1.0"
+description = "Web panel for building, evaluating and automating Laya typed-decision schemas."
+readme = "README.md"
+requires-python = ">=3.10"  # laya requires 3.10+
+license = { text = "Apache-2.0" }
+
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "sqlalchemy>=2.0",
+    "httpx>=0.27",
+    "pydantic>=2.5",
+    # PostgreSQL only: there is no SQLite path. See docs/configuration.md.
+    "psycopg[binary]>=3.2",
+    # Laya is required. There is no fallback engine, so the panel cannot serve
+    # a decision without the real runtime.
+    "laya>=0.3.5",
+    # The panel serves its own tool surface at /mcp (app/mcp). 2.x is required:
+    # the SDK renamed FastMCP to MCPServer in 2.0.
+    "mcp>=2,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+laya-studio = "app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "real_laya: loads real Laya checkpoints (deselected unless --real-laya)",
+    "drift: runs the Prisma migrations against a scratch database to check for schema drift",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's dependency-injection idiom *is* a call in a default argument:
+# `db: Session = Depends(get_db)`. B008 is wrong about this framework.
+"app/routers/*.py" = ["B008"]
+"app/deps.py" = ["B008"]

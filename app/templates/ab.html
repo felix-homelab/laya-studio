@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, empty, status_chip %}
+
+{% block title %}A/B testing{% endblock %}
+{% block heading %}Schema A/B testing{% endblock %}
+{% block subheading %}Compare two revisions over one dataset and see whether the answers actually move{% endblock %}
+
+{% block content %}
+<div class="grid gap-5 xl:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
+
+  <div class="space-y-5">
+    <form id="ab-form" class="rounded-2xl border border-slate-800 bg-slate-900/60">
+      <header class="border-b border-slate-800 px-5 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">New comparison</h2>
+        <p class="mt-0.5 text-xs text-slate-400">
+          Pick two revisions of the same schema and a dataset to run them over.
+        </p>
+      </header>
+      <div class="space-y-4 p-5">
+        <label class="block">
+          <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Name</span>
+          <input id="ab-name" placeholder="Wording tweak v1 vs v2"
+            class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-2 text-sm text-slate-200 outline-none focus:border-sky-600">
+        </label>
+
+        <label class="block">
+          <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Schema</span>
+          <select id="ab-schema"
+            class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-600">
+            {% for schema in schemas %}
+            <option value="{{ schema.id }}">{{ schema.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block">
+            <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Revision A</span>
+            <select id="ab-rev-a" class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-600"></select>
+          </label>
+          <label class="block">
+            <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Revision B</span>
+            <select id="ab-rev-b" class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-600"></select>
+          </label>
+        </div>
+
+        <div class="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+          <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Dataset</span>
+          <div class="mt-2 flex gap-1 rounded-lg bg-slate-900 p-1">
+            <button type="button" data-dataset-mode="job" class="flex-1 rounded-md px-2 py-1 text-[11px] font-medium text-slate-400">From a bulk job</button>
+            <button type="button" data-dataset-mode="rows" class="flex-1 rounded-md px-2 py-1 text-[11px] font-medium text-slate-400">Build rows</button>
+          </div>
+
+          <div id="dataset-job" class="mt-2">
+            <select id="ab-job" aria-label="Bulk job to reuse"
+              class="w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-600">
+              <option value="">Select a bulk job…</option>
+            </select>
+          </div>
+
+          <div id="dataset-rows" class="mt-2 hidden">
+            <div id="ab-dataset-rows" class="space-y-2"></div>
+            <p id="ab-dataset-count" class="mt-2 text-[11px] text-slate-500"></p>
+            <button type="button" id="ab-add-row"
+              class="mt-2 w-full rounded-lg border border-dashed border-slate-700 px-3 py-1.5 text-[11px] text-slate-400 hover:border-sky-600 hover:text-sky-300">
+              + Add a row
+            </button>
+
+            <details class="mt-2 rounded-lg border border-slate-800 bg-slate-950/60">
+              <summary class="cursor-pointer px-3 py-2 text-[11px] text-slate-400 hover:text-slate-200">
+                Paste instead — one row per line, a CSV with a header, or JSON
+              </summary>
+              <div class="space-y-2 border-t border-slate-800 p-2.5">
+                <textarea id="ab-paste" rows="5" spellcheck="false"
+                  class="w-full resize-y rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-2 font-mono text-[11px] text-slate-200 outline-none placeholder:text-slate-600 focus:border-sky-600"
+                  placeholder='we were billed twice&#10;the API returns 500 on every webhook&#10;&#10;{&quot;text&quot;:&quot;...&quot;,&quot;label&quot;:&quot;billing&quot;} per line, or a JSON list'></textarea>
+                <button type="button" id="ab-paste-add"
+                  class="w-full rounded-lg border border-slate-800 px-3 py-1.5 text-[11px] text-slate-300 hover:bg-slate-800">Add these rows</button>
+              </div>
+            </details>
+          </div>
+
+          <datalist id="ab-labels"></datalist>
+        </div>
+
+        <button type="submit" id="ab-run"
+          class="flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-50">
+          {{ icon("split", "w-4 h-4") }} Run comparison
+        </button>
+      </div>
+    </form>
+
+    <section class="rounded-2xl border border-slate-800 bg-slate-900/60">
+      <header class="border-b border-slate-800 px-5 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">Tests</h2>
+      </header>
+      <div id="ab-list" class="divide-y divide-slate-800">
+        {% for test in tests %}
+        <button type="button" data-test-id="{{ test.id }}" class="flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-slate-800/40">
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-xs text-slate-300">{{ test.name }}</span>
+            <span class="mt-0.5 block text-[11px] text-slate-500">
+              {% if test.summary.flip_rate is defined and test.summary.flip_rate is not none %}
+                {{ test.summary.flip_rate|pct(0) }} flip rate · {{ test.summary.total }} rows
+              {% else %}not run{% endif %}
+            </span>
+          </span>
+          {{ status_chip(test.status) }}
+        </button>
+        {% else %}
+        <p class="px-5 py-6 text-center text-xs text-slate-500">No tests yet.</p>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+
+  <section id="ab-detail" class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+    {{ empty("No comparison selected", "Create one on the left, or pick an existing test.") }}
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ asset('js/ab.js') }}"></script>
+{% endblock %}
