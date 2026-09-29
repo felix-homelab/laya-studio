@@ -2,11 +2,14 @@
 
 const LayaStudio = (() => {
   async function api(path, options = {}) {
+    // ``headers`` is merged, not spread with the rest: a caller's own headers
+    // must not wipe out the JSON content type.
+    const { headers, ...rest } = options;
     const response = await fetch(path, {
+      ...rest,
       headers: options.body instanceof FormData
-        ? (options.headers || {})
-        : { 'Content-Type': 'application/json', ...(options.headers || {}) },
-      ...options,
+        ? (headers || {})
+        : { 'Content-Type': 'application/json', ...(headers || {}) },
     });
 
     const text = await response.text();
@@ -51,13 +54,15 @@ const LayaStudio = (() => {
     ));
   }
 
+  // ``Number.isFinite(Number(...))``, not ``Number.isNaN(value)``: the latter
+  // does not coerce, so a string like "n/a" slipped through and rendered "NaN%".
   function pct(value, digits = 1) {
-    if (value === null || value === undefined || Number.isNaN(value)) return '—';
+    if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
     return `${(Number(value) * 100).toFixed(digits)}%`;
   }
 
   function num(value, digits = 2) {
-    if (value === null || value === undefined || Number.isNaN(value)) return '—';
+    if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
     return Number(value).toFixed(digits);
   }
 
@@ -73,11 +78,31 @@ const LayaStudio = (() => {
     return { act: 'bg-emerald-500', verify: 'bg-amber-500', escalate: 'bg-rose-500' }[band] || 'bg-sky-500';
   }
 
+  /** Chip colours for a job/run/action status. Mirrors ``status_color`` in
+   *  ``app/templating.py`` so client-rendered chips match the first paint. */
+  function statusClasses(status) {
+    return {
+      succeeded: 'bg-emerald-500/15 text-emerald-300',
+      ok: 'bg-emerald-500/15 text-emerald-300',
+      approved: 'bg-emerald-500/15 text-emerald-300',
+      running: 'bg-sky-500/15 text-sky-300',
+      in_review: 'bg-sky-500/15 text-sky-300',
+      pending: 'bg-slate-500/15 text-slate-300',
+      skipped: 'bg-slate-500/15 text-slate-300',
+      corrected: 'bg-amber-500/15 text-amber-300',
+      failed: 'bg-rose-500/15 text-rose-300',
+      rejected: 'bg-rose-500/15 text-rose-300',
+    }[status] || 'bg-slate-500/15 text-slate-300';
+  }
+
   /**
    * One-line summary of a state dict for a table cell.
    *
    * Structured values are shown as JSON rather than through ``String()``, which
    * would print ``[object Object]`` and tell the reader nothing.
+   *
+   * Returns plain, *unescaped* text: callers must pass it through
+   * ``escapeHtml`` before putting it into ``innerHTML``.
    */
   function summarizeState(state, limit = 140) {
     return Object.entries(state || {})
@@ -158,7 +183,7 @@ const LayaStudio = (() => {
             <p class="mt-0.5 line-clamp-2 text-xs text-slate-500">${escapeHtml(entry.instructions || '')}</p>
           </div>
           <span class="inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset ${bandClasses(entry.band)}">
-            <span class="h-1.5 w-1.5 rounded-full bg-current"></span>${entry.band}
+            <span class="h-1.5 w-1.5 rounded-full bg-current"></span>${escapeHtml(entry.band)}
           </span>
         </header>
 
@@ -194,7 +219,7 @@ const LayaStudio = (() => {
   }
 
   return {
-    api, toast, escapeHtml, pct, num, bandClasses, barTone, debounce, copy,
+    api, toast, escapeHtml, pct, num, bandClasses, barTone, statusClasses, debounce, copy,
     questionCard, routingLine, summarizeState,
   };
 })();

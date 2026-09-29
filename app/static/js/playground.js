@@ -74,7 +74,12 @@
     }
   }
 
+  // The debounced lint and the explicit one before a run can overlap; only the
+  // newest request may paint the panel, or a stale verdict can land last.
+  let lintSeq = 0;
+
   async function lint() {
+    const seq = ++lintSeq;
     const bundle = questions.questions();
     if (!Object.keys(bundle).length) {
       lintPanel.innerHTML = '<p class="text-[11px] text-rose-300">Add at least one question.</p>';
@@ -85,17 +90,18 @@
         method: 'POST',
         body: JSON.stringify({ questions: bundle }),
       });
+      if (seq !== lintSeq) return result.ok;
       lintPanel.innerHTML = result.findings.length
         ? result.findings.map((f) => `
             <p class="text-[11px] ${f.severity === 'error' ? 'text-rose-300' : 'text-amber-300'}">
-              <span class="font-semibold">${f.severity}</span>
+              <span class="font-semibold">${escapeHtml(f.severity)}</span>
               ${f.question ? `<span class="font-mono text-slate-400">${escapeHtml(f.question)}</span>: ` : ''}
               ${escapeHtml(f.message)}
             </p>`).join('')
         : '<p class="text-[11px] text-emerald-300">Schema looks clean.</p>';
       return result.ok;
     } catch (error) {
-      lintPanel.innerHTML = `<p class="text-[11px] text-rose-300">${escapeHtml(error.message)}</p>`;
+      if (seq === lintSeq) lintPanel.innerHTML = `<p class="text-[11px] text-rose-300">${escapeHtml(error.message)}</p>`;
       return false;
     }
   }
@@ -239,7 +245,7 @@
         });
       });
     } catch (error) {
-      toast(error.message, 'error');
+      historyList.innerHTML = `<p class="px-5 py-6 text-center text-xs text-rose-300">Could not load history: ${escapeHtml(error.message)}</p>`;
     }
   }
 
@@ -278,7 +284,7 @@
       toast(error.message, 'error', 7000);
     } finally {
       evaluateBtn.disabled = false;
-      evaluateBtn.innerHTML = '▶ Run evaluation';
+      evaluateBtn.innerHTML = evaluateLabel;
     }
   });
 

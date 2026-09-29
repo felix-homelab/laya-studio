@@ -39,15 +39,19 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # --- dependencies ------------------------------------------------------------
-# torch first, from the wheel index we actually want, so the resolver does not
-# quietly install a CPU build when CUDA was requested.
+# torch first, from the wheel index we actually want, then pinned as a constraint
+# for the rest of the install. Without the pin, a `laya` torch requirement that
+# build does not satisfy would make the resolver quietly swap it for a PyPI
+# wheel; with it, the build fails here instead.
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt ./
 RUN pip install --upgrade pip \
     && pip install --index-url "${TORCH_INDEX_URL}" torch \
-    && pip install -r requirements.txt
+    && pip freeze | grep -i '^torch==' > /tmp/torch-constraint.txt \
+    && pip install -r requirements.txt --constraint /tmp/torch-constraint.txt \
+    && rm /tmp/torch-constraint.txt
 
 # --- application -------------------------------------------------------------
 COPY pyproject.toml README.md ./
@@ -56,9 +60,10 @@ COPY app ./app
 COPY datasets ./datasets
 
 # Writable locations. /app/data holds upload scratch and the JSONL log store — the
-# database is on a server — and it stays writable so a large upload cannot fill the
-# container's writable layer. docker-compose.yml binds it to ./data on the host so
-# the logs can be read without `docker exec`.
+# database is on a server. Mount something over it: docker-compose.yml binds it to
+# ./data on the host, so the logs can be read without `docker exec` and a large
+# upload lands on the host disk. Started without a mount, both go to the
+# container's writable layer.
 ENV HF_HOME=/models \
     LAYA_STUDIO_DATA_DIR=/app/data \
     LAYA_STUDIO_ENVIRONMENT=production \
@@ -70,6 +75,13 @@ ENV HF_HOME=/models \
 # started without one fails with a connection error against its own loopback —
 # which is loud and immediate rather than a subtle misroute.
 
+# This ownership only covers the image's own copies. A bind mount over /app/data
+# or /models keeps the *host* owner, so on a Linux host give those directories to
+# uid 10001 before the first start (Docker creates missing ones as root):
+#
+#   mkdir -p data models && sudo chown -R 10001:10001 data models
+#
+# See docs/deployment.md#persistence. Docker Desktop handles this for you.
 RUN mkdir -p /app/data /models \
     && useradd --create-home --uid 10001 laya \
     && chown -R laya:laya /app /models

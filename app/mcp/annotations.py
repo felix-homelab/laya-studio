@@ -15,7 +15,8 @@ from mcp.types import ToolAnnotations
 READ = ToolAnnotations(read_only_hint=True, idempotent_hint=True)
 
 #: A write that can be repeated without extra damage (a re-run, a refit, an update).
-WRITE = ToolAnnotations(read_only_hint=False, idempotent_hint=True)
+#: ``destructive_hint`` is spelled out: the protocol defaults it to true.
+WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True)
 
 #: A write that cannot be undone: deletes, and actions with external side effects.
 DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True)

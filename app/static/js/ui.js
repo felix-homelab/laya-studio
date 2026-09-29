@@ -89,6 +89,16 @@
     popup.style.top = `${below + height > window.innerHeight - 8 && above > 8 ? above : below}px`;
   }
 
+  /* One set of document/window listeners serves every enhanced select, routed
+   * to whichever menu is open. Per-select global listeners would outlive their
+   * selects: ``rowsEditor`` re-renders (and re-enhances) on every edit. */
+  let openSelect = null;
+
+  document.addEventListener('keydown', (event) => { if (openSelect) openSelect.keydown(event); });
+  document.addEventListener('pointerdown', (event) => { if (openSelect) openSelect.pointerdown(event); });
+  window.addEventListener('scroll', (event) => { if (openSelect) openSelect.reposition(event); }, true);
+  window.addEventListener('resize', (event) => { if (openSelect) openSelect.reposition(event); });
+
   /** Upgrade one native <select>. Idempotent. */
   function enhanceSelect(select) {
     if (!(select instanceof HTMLSelectElement) || select.dataset.layaSelect) return;
@@ -177,7 +187,9 @@
 
     function openMenu() {
       if (open || trigger.disabled) return;
+      if (openSelect && openSelect !== handlers) openSelect.close();
       open = true;
+      openSelect = handlers;
       trigger.setAttribute('aria-expanded', 'true');
       searchInput.value = '';
       searchWrap.classList.toggle('hidden', select.options.length < 9);
@@ -193,6 +205,7 @@
     function closeMenu(refocus = false) {
       if (!open) return;
       open = false;
+      if (openSelect === handlers) openSelect = null;
       trigger.setAttribute('aria-expanded', 'false');
       popup.classList.add('hidden');
       if (refocus) trigger.focus();
@@ -254,22 +267,25 @@
       else if (event.key === 'Tab') { closeMenu(); }
     });
 
-    document.addEventListener('keydown', (event) => {
-      if (!open) return;
-      if (event.key === 'Escape') { event.preventDefault(); closeMenu(true); }
-      else if (event.key === 'ArrowDown') { event.preventDefault(); move(1); }
-      else if (event.key === 'ArrowUp') { event.preventDefault(); move(-1); }
-    });
-    document.addEventListener('pointerdown', (event) => {
-      if (open && !wrap.contains(event.target) && !popup.contains(event.target)) closeMenu();
-    });
-    const reposition = (event) => {
-      if (!open) return;
-      if (event && event.target && popup.contains(event.target)) return;
-      placePopup(popup, trigger);
+    // Reached through the shared listeners above while this menu is open.
+    const handlers = {
+      close: () => closeMenu(),
+      keydown(event) {
+        // The trigger and search box handle their own keys (and prevent the
+        // default); acting again here would move the highlight twice.
+        if (event.defaultPrevented) return;
+        if (event.key === 'Escape') { event.preventDefault(); closeMenu(true); }
+        else if (event.key === 'ArrowDown') { event.preventDefault(); move(1); }
+        else if (event.key === 'ArrowUp') { event.preventDefault(); move(-1); }
+      },
+      pointerdown(event) {
+        if (!wrap.contains(event.target) && !popup.contains(event.target)) closeMenu();
+      },
+      reposition(event) {
+        if (event && event.target && popup.contains(event.target)) return;
+        placePopup(popup, trigger);
+      },
     };
-    window.addEventListener('scroll', reposition, true);
-    window.addEventListener('resize', reposition);
 
     // The native select stays authoritative: page code can keep assigning
     // `.value` or rewriting its options and the trigger follows.
@@ -313,7 +329,8 @@
     input.parentNode.insertBefore(wrap, input);
     wrap.appendChild(input);
     wrap.appendChild(popup);
-    input.className = skin.join(' ');
+    // The wrapper takes the layout tokens; the input still has to fill it.
+    input.className = ['w-full', ...skin].join(' ');
 
     let visible = [];
     let active = -1;
@@ -658,6 +675,7 @@
       if (!row || event.target.dataset.field !== 'type') return;
       const type = event.target.value;
       const entry = rows[Number(row.dataset.row)];
+      if (!entry) return;
       let raw = entry.value;
       if (type === 'boolean') raw = /^(true|yes|1)$/i.test(String(raw).trim()) ? 'true' : 'false';
       entry.type = type;

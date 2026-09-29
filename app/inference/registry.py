@@ -62,13 +62,18 @@ _lock = threading.RLock()
 _ready_event = threading.Event()
 _state = AsyncEngineState()
 _engine: DecisionEngine | None = None
-_build_thread: threading.Thread | None = None
 
 #: Test-only override. Never set from configuration or from HTTP.
 _override: DecisionEngine | None = None
 
 
-def _build(settings: Settings) -> None:
+def _build(settings: Settings, state: AsyncEngineState) -> None:
+    """Build the engine and record the outcome on ``state``.
+
+    ``state`` is the object that was current when this build started. If
+    :func:`reset_engine_cache` has replaced it since, the build is stale: its
+    outcome is dropped rather than written over the fresh state.
+    """
     global _engine
     started = perf_counter()
     try:
@@ -76,29 +81,34 @@ def _build(settings: Settings) -> None:
     except EngineUnavailable as exc:
         message = str(exc)
         logger.error("Laya engine could not be built: %s", message)
-        with _lock:
-            _state.state = FAILED
-            _state.error = message
-            _state.duration_seconds = perf_counter() - started
-        _ready_event.set()
+        _settle_failed(state, message, perf_counter() - started)
         return
     except Exception as exc:  # noqa: BLE001 - never let a build kill the process
         message = f"{type(exc).__name__}: {exc}"
         logger.exception("Laya engine failed unexpectedly")
-        with _lock:
-            _state.state = FAILED
-            _state.error = message
-            _state.duration_seconds = perf_counter() - started
-        _ready_event.set()
+        _settle_failed(state, message, perf_counter() - started)
         return
 
     with _lock:
+        if state is not _state:
+            logger.info("Discarding a Laya engine build that was reset while it ran.")
+            return
         _engine = engine
-        _state.state = READY
-        _state.ready_at = datetime.now(timezone.utc)
-        _state.duration_seconds = perf_counter() - started
-    _ready_event.set()
-    logger.info("Laya engine ready in %.1fs: %s", _state.duration_seconds, engine.describe())
+        state.state = READY
+        state.ready_at = datetime.now(timezone.utc)
+        state.duration_seconds = duration = perf_counter() - started
+        _ready_event.set()
+    logger.info("Laya engine ready in %.1fs: %s", duration, engine.describe())
+
+
+def _settle_failed(state: AsyncEngineState, message: str, duration: float) -> None:
+    with _lock:
+        if state is not _state:
+            return
+        state.state = FAILED
+        state.error = message
+        state.duration_seconds = duration
+        _ready_event.set()
 
 
 def start_engine(*, background: bool = True, settings: Settings | None = None) -> None:
@@ -108,8 +118,6 @@ def start_engine(*, background: bool = True, settings: Settings | None = None) -
     immediately. ``background=False`` blocks until the build finishes — what the
     CLI wants.
     """
-    global _build_thread
-
     if _override is not None:
         _ready_event.set()
         return
@@ -127,6 +135,7 @@ def start_engine(*, background: bool = True, settings: Settings | None = None) -
             _state.started_at = datetime.now(timezone.utc)
             _state.error = None
             _ready_event.clear()
+        build_state = _state
 
     if already_started:
         if not background:
@@ -140,12 +149,11 @@ def start_engine(*, background: bool = True, settings: Settings | None = None) -
     )
 
     if background:
-        _build_thread = threading.Thread(
-            target=_build, args=(settings,), name="laya-engine-build", daemon=True
-        )
-        _build_thread.start()
+        threading.Thread(
+            target=_build, args=(settings, build_state), name="laya-engine-build", daemon=True
+        ).start()
     else:
-        _build(settings)
+        _build(settings, build_state)
 
 
 def wait_for_engine(timeout: float | None = None) -> bool:
@@ -241,6 +249,7 @@ def engine_status() -> dict:
             "name": detail.get("name", "unknown"),
             "device": detail.get("device"),
             "loaded_checkpoints": detail.get("loaded_checkpoints", []),
+            "started_at": None,
             "duration_seconds": None,
         }
 
@@ -279,10 +288,13 @@ def set_engine(engine: DecisionEngine | None) -> None:
 
 
 def reset_engine_cache() -> None:
-    """Forget the engine and its state, so the next call rebuilds."""
-    global _engine, _build_thread, _state
+    """Forget the engine and its state, so the next call rebuilds.
+
+    A build still in flight is not interrupted, but it can no longer land: it
+    finishes against the state it started with, which is no longer current.
+    """
+    global _engine, _state
     with _lock:
         _engine = None
-        _build_thread = None
         _state = AsyncEngineState()
-    _ready_event.clear()
+        _ready_event.clear()

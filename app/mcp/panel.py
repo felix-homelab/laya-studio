@@ -219,12 +219,14 @@ def _detail_text(payload: Any) -> str:
     if isinstance(payload, dict) and "detail" in payload:
         detail = payload["detail"]
         if isinstance(detail, list):
-            # FastAPI's request-validation errors: keep locations and messages.
+            # FastAPI's request-validation errors: keep locations and messages. The
+            # message is under `msg`; the rest of the item echoes the submitted input.
             parts = []
             for item in detail:
                 if isinstance(item, dict):
                     location = ".".join(str(bit) for bit in item.get("loc", ()))
-                    parts.append(f"{location or 'body'}: {item.get('message', item)}")
+                    message = item.get("msg") or item.get("type") or "invalid value"
+                    parts.append(f"{location or 'body'}: {message}")
                 else:
                     parts.append(str(item))
             return "; ".join(parts) or str(detail)

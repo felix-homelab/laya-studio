@@ -46,12 +46,12 @@ class ParsedDataset:
 
 
 def _decode(content: bytes) -> str:
-    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
-        try:
-            return content.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    raise BulkError("Could not decode the upload as UTF-8 or Latin-1.")
+    try:
+        # utf-8-sig also decodes plain UTF-8, just stripping a leading BOM.
+        return content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        # Latin-1 maps every byte, so this terminal fallback cannot fail.
+        return content.decode("latin-1")
 
 
 def parse_dataset(content: bytes, filename: str = "") -> ParsedDataset:
@@ -183,6 +183,14 @@ def create_job(
     """Create a bulk job record in ``pending`` state."""
     dataset = parse_dataset(content, filename)
 
+    warnings = list(dataset.warnings)
+    if state_column and state_column not in dataset.columns:
+        # build_state falls back to every column; say so rather than silently
+        # handing the model a wider state than the caller asked for.
+        warnings.append(
+            f"State column {state_column!r} is not in the upload; every column is used as the state."
+        )
+
     job = BulkJob(
         name=name.strip() or filename or "Bulk run",
         schema_id=schema.id if schema is not None else None,
@@ -195,7 +203,7 @@ def create_job(
             "model": model,
             "columns": dataset.columns,
             "format": dataset.format,
-            "parse_warnings": dataset.warnings,
+            "parse_warnings": warnings,
         },
     )
     db.add(job)
@@ -210,6 +218,11 @@ def create_job(
 def run_job(db: Session, job: BulkJob, *, commit: bool = True) -> BulkJob:
     """Score every row of a job and write the summary metrics."""
     if job.status == "running":
+        raise BulkError("This job is already running.")
+    # The "running" status is only committed with the results, so the check above
+    # cannot see a concurrent run. Lock the job row for the rest of this
+    # transaction instead; SKIP LOCKED returns nothing if another run holds it.
+    if db.scalar(select(BulkJob.id).where(BulkJob.id == job.id).with_for_update(skip_locked=True)) is None:
         raise BulkError("This job is already running.")
     if not job.schema_id:
         raise BulkError("This job has no schema attached.")
@@ -237,16 +250,19 @@ def run_job(db: Session, job: BulkJob, *, commit: bool = True) -> BulkJob:
 
     for item in items:
         try:
-            outcome = evaluation_service.run_evaluation(
-                db,
-                state=item.state,
-                schema=schema,
-                model=model,
-                source="bulk",
-                label=item.label,
-                label_source="dataset" if item.label else None,
-                commit=False,
-            )
+            # A SAVEPOINT per row: a row that fails mid-flush is rolled back on its
+            # own instead of leaving the session unusable for the rows after it.
+            with db.begin_nested():
+                outcome = evaluation_service.run_evaluation(
+                    db,
+                    state=item.state,
+                    schema=schema,
+                    model=model,
+                    source="bulk",
+                    label=item.label,
+                    label_source="dataset" if item.label else None,
+                    commit=False,
+                )
             item.evaluation_id = outcome.evaluation.id
             item.predicted = outcome.evaluation.top_choice
             item.confidence = outcome.evaluation.confidence

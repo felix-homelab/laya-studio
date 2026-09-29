@@ -40,6 +40,14 @@ def enqueue(
 ) -> ReviewItem:
     """Add an item to the queue, de-duplicating on the source evaluation."""
     if evaluation_id is not None:
+        # Serialise enqueues for one evaluation on its row lock, so two concurrent
+        # calls cannot both miss the open item and insert duplicates. NO KEY
+        # UPDATE, so it does not block inserts that merely reference the row.
+        db.scalar(
+            select(Evaluation.id)
+            .where(Evaluation.id == evaluation_id)
+            .with_for_update(key_share=True)
+        )
         existing = db.scalar(
             select(ReviewItem).where(
                 ReviewItem.evaluation_id == evaluation_id,
@@ -92,7 +100,9 @@ def list_items(
     if reason:
         statement = statement.where(ReviewItem.reason == reason)
     if search:
-        statement = statement.where(ReviewItem.state_text.ilike(f"%{search.strip()}%"))
+        # Match the text literally: escape LIKE's own wildcards and escape char.
+        term = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        statement = statement.where(ReviewItem.state_text.ilike(f"%{term}%", escape="\\"))
 
     statement = statement.order_by(
         ReviewItem.priority.desc(),
@@ -106,6 +116,15 @@ def get_item(db: Session, item_id: int) -> ReviewItem | None:
 
 
 def claim(db: Session, item: ReviewItem, *, assignee: str, commit: bool = True) -> ReviewItem:
+    """Assign an open item to a reviewer.
+
+    Raises :class:`ValueError` if the item is no longer open.
+    """
+    # Lock the row and re-read the status, so a resolve that committed after the
+    # caller loaded the item is not silently reopened.
+    db.refresh(item, with_for_update=True)
+    if item.status not in OPEN_STATUSES:
+        raise ValueError(f"This item is already {item.status}; it cannot be claimed.")
     item.assignee = assignee
     item.status = "in_review"
     if commit:
@@ -137,6 +156,16 @@ def resolve(
         raise ValueError(f"Unknown review status {status!r}; expected one of {', '.join(REVIEW_STATUS)}.")
     if status == "corrected" and not (corrected_label or "").strip():
         raise ValueError("A corrected item requires a corrected_label.")
+
+    # Serialise with a concurrent claim/resolve of the same item (see `claim`).
+    db.refresh(item, with_for_update=True)
+    if status == "approved" and not (item.model_choice or "").strip():
+        # Approving writes the model's choice as ground truth; with none recorded
+        # there is nothing to write, and closing the item would silently drop it.
+        raise ValueError(
+            "This item has no recorded model choice to approve; resolve it as "
+            "'corrected' with a label, or 'rejected'."
+        )
 
     item.status = status
     item.notes = notes
@@ -179,12 +208,12 @@ def stats(db: Session) -> dict[str, Any]:
         )
     }
 
-    open_items = list(
-        db.scalars(select(ReviewItem).where(ReviewItem.status.in_(OPEN_STATUSES)).limit(500))
-    )
-    confidences = [
-        item.model_confidence for item in open_items if item.model_confidence is not None
-    ]
+    # Aggregated over the whole open backlog, not a sample of it.
+    mean_open_confidence, oldest_open = db.execute(
+        select(func.avg(ReviewItem.model_confidence), func.min(ReviewItem.created_at)).where(
+            ReviewItem.status.in_(OPEN_STATUSES)
+        )
+    ).one()
 
     resolved = sum(
         count for status, count in by_status.items() if status in ("approved", "corrected", "rejected")
@@ -201,9 +230,9 @@ def stats(db: Session) -> dict[str, Any]:
         "reviewed": reviewed,
         "correction_rate": (corrected / reviewed) if reviewed else None,
         "mean_open_confidence": (
-            round(sum(confidences) / len(confidences), 6) if confidences else None
+            None if mean_open_confidence is None else round(float(mean_open_confidence), 6)
         ),
-        "oldest_open": min((item.created_at for item in open_items), default=None),
+        "oldest_open": oldest_open,
     }
 
 

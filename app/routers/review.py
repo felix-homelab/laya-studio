@@ -58,7 +58,13 @@ def claim(
     payload: ReviewClaimRequest,
     db: Session = Depends(get_db),
 ) -> ReviewItemResponse:
-    item = review_service.claim(db, _get_item(db, item_id), assignee=payload.assignee)
+    item = _get_item(db, item_id)
+    # The service re-checks the status under a row lock, so claiming an item that
+    # was resolved in the meantime is refused rather than silently reopening it.
+    try:
+        item = review_service.claim(db, item, assignee=payload.assignee)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     return ReviewItemResponse.model_validate(item)
 
 

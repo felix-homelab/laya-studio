@@ -30,7 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .records import LEVEL_RANK, normalize_timestamp
+from .records import LEVEL_RANK, normalize_timestamp, utc_now
 
 #: How many lines a single query will look at before giving up and saying so.
 DEFAULT_MAX_SCAN = 200_000
@@ -51,6 +51,14 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     return repr(value)
+
+
+def _mtime(item: Path) -> float:
+    """A file's mtime, or 0 when it was rotated or pruned away mid-listing."""
+    try:
+        return item.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 class LogStore:
@@ -86,7 +94,21 @@ class LogStore:
 
     def write(self, record: dict[str, Any]) -> None:
         """Append one record. Never raises: logging must not break a request."""
-        line = json.dumps(record, default=_jsonable, ensure_ascii=False)
+        try:
+            line = json.dumps(record, default=_jsonable, ensure_ascii=False)
+        except Exception as error:  # noqa: BLE001 - a circular reference, a non-str key
+            # Keep a trace that the record existed rather than raising into the
+            # request that logged it.
+            line = json.dumps(
+                {
+                    "ts": utc_now(),
+                    "kind": "log",
+                    "level": "ERROR",
+                    "logger": "laya_studio.store",
+                    "message": f"Dropped an unserializable record: {type(error).__name__}: {error}",
+                },
+                ensure_ascii=False,
+            )
         prune = False
         try:
             with self._lock:
@@ -132,19 +154,22 @@ class LogStore:
             return 0
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
         removed = 0
-        for candidate in self.directory.glob("*.jsonl*"):
-            if candidate == self.path:
-                continue
-            try:
-                modified = datetime.fromtimestamp(candidate.stat().st_mtime, tz=timezone.utc)
-            except OSError:
-                continue
-            if modified < cutoff:
-                try:
-                    candidate.unlink()
-                    removed += 1
-                except OSError:  # pragma: no cover - raced with another process
+        # Under the same lock as the rotation: renaming a backup keeps its mtime,
+        # so an unserialized sweep could delete a file `_rotate` is shifting.
+        with self._lock:
+            for candidate in self.directory.glob("*.jsonl*"):
+                if candidate == self.path:
                     continue
+                try:
+                    modified = datetime.fromtimestamp(candidate.stat().st_mtime, tz=timezone.utc)
+                except OSError:
+                    continue
+                if modified < cutoff:
+                    try:
+                        candidate.unlink()
+                        removed += 1
+                    except OSError:  # pragma: no cover - raced with another process
+                        continue
         return removed
 
     # -- reading ------------------------------------------------------------
@@ -155,7 +180,7 @@ class LogStore:
             candidates = [item for item in self.directory.glob("*.jsonl*") if item.is_file()]
         except OSError:  # pragma: no cover - unreadable directory
             return []
-        candidates.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0)
+        candidates.sort(key=_mtime)
         return list(reversed(candidates)) if newest_first else candidates
 
     def query(
@@ -200,6 +225,10 @@ class LogStore:
             if scanned >= max_scan:
                 truncated = True
                 break
+            # `newest` reads the newest file first, but each file top to bottom:
+            # collect one file's matches on their own (a deque keeps its newest
+            # `room`), then put them *behind* the newer ones already collected.
+            file_matches: deque[dict[str, Any]] = deque(maxlen=max(1, limit - len(matches)))
             for record in self._iter_records(file_path, max_scan - scanned):
                 scanned += 1
                 if not self._keep(
@@ -226,8 +255,15 @@ class LogStore:
                         break
                     matches.append(record)
                 else:
-                    matches.append(record)  # deque keeps the newest `limit`
-            if order == "oldest" and len(matches) >= limit:
+                    file_matches.append(record)
+            if order == "oldest":
+                if len(matches) >= limit:
+                    break
+                continue
+            matches.extendleft(reversed(file_matches))
+            if len(matches) >= limit:
+                # Every file left is older than what is already collected.
+                truncated = True
                 break
 
         records = [self._shrink(record, include_traceback) for record in matches]

@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import Evaluation, WorkflowRun
+from .models import CalibrationSnapshot, Evaluation, WorkflowRun
 from .schemas import (
     EvaluationResponse,
     QuestionResult,
     WorkflowRunDetail,
 )
+
+
+def _as_list(value: Any) -> list[Any]:
+    """A JSONB list field, or empty when the stored value is not a list."""
+    return list(value) if isinstance(value, list) else []
 
 
 def question_results(payload: list[dict[str, Any]] | None) -> list[QuestionResult]:
@@ -19,9 +24,10 @@ def question_results(payload: list[dict[str, Any]] | None) -> list[QuestionResul
             continue
         output.append(
             QuestionResult(
-                question=str(entry.get("question", "")),
-                type=str(entry.get("type", "choice")),
-                instructions=str(entry.get("instructions", "")),
+                # `or`, not a `.get` default: a stored null must not become "None".
+                question=str(entry.get("question") or ""),
+                type=str(entry.get("type") or "choice"),
+                instructions=str(entry.get("instructions") or ""),
                 choice=entry.get("choice"),
                 level=entry.get("level"),
                 confidence=entry.get("confidence"),
@@ -34,10 +40,10 @@ def question_results(payload: list[dict[str, Any]] | None) -> list[QuestionResul
                 score=entry.get("score"),
                 max_score=entry.get("max_score"),
                 act_probability=entry.get("act_probability"),
-                rubric=list(entry.get("rubric") or []),
-                breakdown=list(entry.get("breakdown") or []),
-                alternatives=list(entry.get("alternatives") or []),
-                band=str(entry.get("band", "unknown")),
+                rubric=_as_list(entry.get("rubric")),
+                breakdown=_as_list(entry.get("breakdown")),
+                alternatives=_as_list(entry.get("alternatives")),
+                band=str(entry.get("band") or "unknown"),
             )
         )
     return output
@@ -82,3 +88,23 @@ def to_run_detail(
     if evaluation is not None:
         detail.evaluation = to_evaluation_response(evaluation)
     return detail
+
+
+def snapshot_to_dict(snapshot: CalibrationSnapshot) -> dict[str, Any]:
+    """One calibration fit, as the analytics endpoints return it."""
+    return {
+        "id": snapshot.id,
+        "primitive": snapshot.primitive,
+        "question": snapshot.question,
+        "schema_id": snapshot.schema_id,
+        "n_samples": snapshot.n_samples,
+        "slope": snapshot.slope,
+        "intercept": snapshot.intercept,
+        "temperature": snapshot.temperature,
+        "ece": snapshot.ece,
+        "mce": snapshot.mce,
+        "brier": snapshot.brier,
+        "accuracy": snapshot.accuracy,
+        "mean_confidence": snapshot.mean_confidence,
+        "created_at": snapshot.created_at.isoformat() if snapshot.created_at else None,
+    }

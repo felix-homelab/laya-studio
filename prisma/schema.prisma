@@ -74,8 +74,8 @@ model SchemaRevision {
   ab_tests_as_revision_a ABTest[]     @relation("ABTestRevisionA")
   ab_tests_as_revision_b ABTest[]     @relation("ABTestRevisionB")
 
+  // Also serves schema_id lookups and the FK: it leads with schema_id.
   @@unique([schema_id, revision], map: "uq_schema_revision")
-  @@index([schema_id], map: "ix_schema_revisions_schema_id")
   @@map("schema_revisions")
 }
 
@@ -114,11 +114,12 @@ model Evaluation {
   workflow_runs  WorkflowRun[]
   review_items   ReviewItem[]
 
-  @@index([created_at], map: "ix_evaluations_created_at")
   @@index([top_choice], map: "ix_evaluations_top_choice")
   @@index([source], map: "ix_evaluations_source")
   @@index([schema_id], map: "ix_evaluations_schema_id")
+  @@index([schema_revision_id], map: "ix_evaluations_schema_revision_id")
   @@index([confidence], map: "ix_evaluations_confidence")
+  // Also serves created_at on its own, so there is no separate index for it.
   @@index([created_at, source], map: "ix_evaluations_created_source")
   @@map("evaluations")
 }
@@ -145,6 +146,7 @@ model BulkJob {
 
   @@index([created_at], map: "ix_bulk_jobs_created_at")
   @@index([status], map: "ix_bulk_jobs_status")
+  @@index([schema_id], map: "ix_bulk_jobs_schema_id")
   @@map("bulk_jobs")
 }
 
@@ -164,7 +166,9 @@ model BulkJobItem {
   job        BulkJob     @relation(fields: [job_id], references: [id], onDelete: Cascade)
   evaluation Evaluation? @relation(fields: [evaluation_id], references: [id], onDelete: SetNull)
 
-  @@index([job_id], map: "ix_bulk_job_items_job_id")
+  // One item per input row; also serves job_id lookups and the FK.
+  @@unique([job_id, row_index], map: "uq_bulk_job_item_row")
+  @@index([evaluation_id], map: "ix_bulk_job_items_evaluation_id")
   @@map("bulk_job_items")
 }
 
@@ -190,6 +194,9 @@ model ABTest {
 
   @@index([created_at], map: "ix_ab_tests_created_at")
   @@index([status], map: "ix_ab_tests_status")
+  @@index([schema_id], map: "ix_ab_tests_schema_id")
+  @@index([revision_a_id], map: "ix_ab_tests_revision_a_id")
+  @@index([revision_b_id], map: "ix_ab_tests_revision_b_id")
   @@map("ab_tests")
 }
 
@@ -210,7 +217,8 @@ model ABTestItem {
 
   test ABTest @relation(fields: [test_id], references: [id], onDelete: Cascade)
 
-  @@index([test_id], map: "ix_ab_test_items_test_id")
+  // One item per dataset row; also serves test_id lookups and the FK.
+  @@unique([test_id, row_index], map: "uq_ab_test_item_row")
   @@map("ab_test_items")
 }
 
@@ -240,6 +248,7 @@ model Workflow {
 
   @@index([created_at], map: "ix_workflows_created_at")
   @@index([enabled], map: "ix_workflows_enabled")
+  @@index([schema_id], map: "ix_workflows_schema_id")
   @@map("workflows")
 }
 
@@ -266,10 +275,11 @@ model WorkflowRun {
   review_items ReviewItem[]
 
   @@index([created_at], map: "ix_workflow_runs_created_at")
-  @@index([route], map: "ix_workflow_runs_route")
+  // Also serves route on its own, so there is no separate index for it.
   @@index([route, created_at], map: "ix_workflow_runs_route_created")
   @@index([status], map: "ix_workflow_runs_status")
   @@index([workflow_id], map: "ix_workflow_runs_workflow_id")
+  @@index([evaluation_id], map: "ix_workflow_runs_evaluation_id")
   @@map("workflow_runs")
 }
 
@@ -325,9 +335,11 @@ model ReviewItem {
 
   @@index([created_at], map: "ix_review_items_created_at")
   @@index([priority], map: "ix_review_items_priority")
-  @@index([status], map: "ix_review_items_status")
+  // Also serves status on its own, so there is no separate index for it.
   @@index([status, priority], map: "ix_review_items_status_priority")
   @@index([workflow_id], map: "ix_review_items_workflow_id")
+  @@index([workflow_run_id], map: "ix_review_items_workflow_run_id")
+  @@index([evaluation_id], map: "ix_review_items_evaluation_id")
   @@map("review_items")
 }
 

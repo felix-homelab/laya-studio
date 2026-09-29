@@ -299,6 +299,19 @@ def test_ingest_dry_run_routes_without_executing_anything(client, triage_schema)
     assert client.get("/api/review/items?status=open").json() == []
 
 
+def test_manual_dry_run_executes_nothing_either(client, triage_schema):
+    workflow = make_workflow(client, triage_schema)
+    response = client.post(
+        f"/api/workflows/{workflow['id']}/run", json={"text": "zzz qqq", "dry_run": True}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dry_run"] is True
+    assert body["run"] is None
+    assert body["actions"] == []
+    assert client.get(f"/api/workflows/{workflow['id']}/runs").json() == []
+
+
 def test_ingest_accepts_plain_text_bodies(client, triage_schema):
     workflow = make_workflow(client, triage_schema)
     response = client.post(

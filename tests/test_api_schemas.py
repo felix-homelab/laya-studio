@@ -109,6 +109,18 @@ def test_duplicate_names_get_unique_keys(client):
     assert second["key"] == "repeat-2"
 
 
+def test_an_explicit_duplicate_key_is_a_conflict(client):
+    payload = {
+        "name": "Keyed",
+        "key": "keyed",
+        "questions": {"q": {"type": "noul", "instructions": "hi"}},
+    }
+    assert client.post("/api/schemas", json=payload).status_code == 201
+    duplicate = client.post("/api/schemas", json=payload)
+    assert duplicate.status_code == 409
+    assert "keyed" in duplicate.json()["detail"]
+
+
 def test_search_and_template_filter(client):
     found = client.get("/api/schemas", params={"search": "triage"}).json()
     assert any(schema["key"] == "email-triage" for schema in found)

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import icon, empty, card %}
+{% from "_macros.html" import icon, empty %}
 
 {% block title %}Playground{% endblock %}
 {% block heading %}Decision playground{% endblock %}
@@ -30,7 +30,7 @@
           </div>
         </div>
 
-        <div id="route-preview" class="hidden rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] text-slate-400"></div>
+        <div id="route-preview" aria-live="polite" class="hidden rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] text-slate-400"></div>
       </div>
     </section>
 
@@ -83,7 +83,7 @@
       </header>
       <div class="space-y-3 p-5">
         <div id="questions-editor"></div>
-        <div id="lint-panel" class="space-y-1"></div>
+        <div id="lint-panel" aria-live="polite" class="space-y-1"></div>
         <div class="flex gap-2">
           <button type="button" id="reset-questions"
             class="flex-1 rounded-lg border border-slate-800 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200">Reload from schema</button>
@@ -101,7 +101,7 @@
 
   {# ---------------------------------------------------------- the results #}
   <div class="space-y-5">
-    <section id="result-panel" class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+    <section id="result-panel" aria-live="polite" class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
       {{ empty("No evaluation yet", "Fill in a state on the left and run it.") }}
     </section>
 

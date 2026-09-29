@@ -91,11 +91,18 @@
     const cells = [];
     let current = '';
     let quoted = false;
-    Array.from(line).forEach((character) => {
-      if (character === '"') { quoted = !quoted; return; }
-      if (character === ',' && !quoted) { cells.push(current.trim()); current = ''; return; }
-      current += character;
-    });
+    for (let at = 0; at < line.length; at += 1) {
+      const character = line[at];
+      if (character === '"') {
+        // RFC 4180: inside a quoted field, "" is one literal quote.
+        if (quoted && line[at + 1] === '"') { current += '"'; at += 1; } else { quoted = !quoted; }
+      } else if (character === ',' && !quoted) {
+        cells.push(current.trim());
+        current = '';
+      } else {
+        current += character;
+      }
+    }
     cells.push(current.trim());
     return cells;
   }
@@ -137,13 +144,16 @@
     return lines.map((line) => ({ state: line.trim() }));
   }
 
+  /** Drop only untouched rows: one with just a label still holds the user's input. */
+  const keepRow = (row) => row.state !== undefined || row.label !== undefined;
+
   document.getElementById('ab-paste-add').addEventListener('click', () => {
     const paste = document.getElementById('ab-paste');
     collectRows();
     try {
       const imported = parsePasted(paste.value);
       if (!imported.length) { toast('Nothing to import', 'warn'); return; }
-      dataset = dataset.filter((row) => row.state !== undefined);
+      dataset = dataset.filter(keepRow);
       dataset.push(...imported);
       renderRows();
       paste.value = '';
@@ -155,7 +165,7 @@
 
   document.getElementById('ab-add-row').addEventListener('click', () => {
     collectRows();
-    dataset = dataset.filter((row) => row.state !== undefined);
+    dataset = dataset.filter(keepRow);
     dataset.push({});
     renderRows(true);
   });
@@ -370,6 +380,13 @@
     }
   }
 
+  /** Wire the list rows: the server-rendered ones at startup, and every refresh. */
+  function wireTestRows() {
+    list.querySelectorAll('[data-test-id]').forEach((node) => {
+      node.addEventListener('click', () => open(Number(node.dataset.testId)));
+    });
+  }
+
   async function refreshList() {
     try {
       const rows = await api('/api/ab/tests?limit=30');
@@ -386,9 +403,7 @@
           </button>`).join('')
         : '<p class="px-5 py-6 text-center text-xs text-slate-500">No tests yet.</p>';
 
-      list.querySelectorAll('[data-test-id]').forEach((node) => {
-        node.addEventListener('click', () => open(Number(node.dataset.testId)));
-      });
+      wireTestRows();
     } catch (error) {
       toast(error.message, 'error');
     }
@@ -397,6 +412,8 @@
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
 
+    // The "No schemas yet" placeholder has an empty value; Number('') would send 0.
+    if (!schemaSelect.value) { toast('Create a schema first', 'warn'); return; }
     if (revA.value === revB.value) { toast('Pick two different revisions', 'warn'); return; }
 
     const payload = {
@@ -435,9 +452,7 @@
   });
 
   schemaSelect.addEventListener('change', () => { loadRevisions(); loadLabels(); });
-  list.querySelectorAll('[data-test-id]').forEach((node) => {
-    node.addEventListener('click', () => open(Number(node.dataset.testId)));
-  });
+  wireTestRows();
 
   renderRows();
   loadRevisions();

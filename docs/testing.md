@@ -36,9 +36,11 @@ returning a shape the normaliser accepts.
 form of [laya-integration.md](laya-integration.md) — every structural claim in
 that document has an assertion here.
 
-**A throwaway database.** `LAYA_STUDIO_DATABASE_URL` points at a file inside a
-`tempfile.mkdtemp()` directory, and `LAYA_STUDIO_DATA_DIR` keeps uploads out of the
-repository. `fresh_db` drops and recreates every table, then re-seeds the built-in
+**A throwaway database.** `LAYA_STUDIO_DATABASE_URL` points at a disposable
+PostgreSQL container started by `tests/pg.py` (or at `LAYA_STUDIO_TEST_DATABASE_URL`
+if you set one), and `LAYA_STUDIO_DATA_DIR` points at a `tempfile.mkdtemp()`
+directory that keeps uploads out of the repository. `fresh_db` empties every table
+with a single `TRUNCATE ... RESTART IDENTITY CASCADE`, then re-seeds the built-in
 templates, before **each** test — so tests share nothing and can run in any order.
 
 **A fake LLM provider.** The fallback is exercised through a `FakeProvider` that
@@ -126,18 +128,18 @@ def test_overconfidence_shows_up_as_a_positive_gap():
     assert report.ece == pytest.approx(0.45, abs=1e-9)
 ```
 
-and the fitter is checked for *direction*, not for a magic number:
+and the fitter is checked against the observed rate, not the stated confidence:
 
 ```python
-temperature, _ = fit_temperature([0.95] * 200, [True] * 120 + [False] * 80)
-assert temperature > 1.5                       # over-confident -> soften
-assert abs(apply_temperature(0.95, temperature) - 0.6) < abs(0.95 - 0.6)
+fit = fit_platt([0.95] * 200, [True] * 120 + [False] * 80)
+assert fit.fitted
+assert fit.apply(0.95) == pytest.approx(0.60, abs=0.01)   # over-confident -> soften
 ```
 
 ### The conditions that are easy to forget
 
-* `fit_temperature` on all-correct outcomes returns `1.0` **and says why**, rather
-  than inventing a number;
+* `fit_platt` on all-correct outcomes returns the identity map **and says why**
+  (`fitted=False`, "not identifiable"), rather than inventing a number;
 * `noul` questions have an empty `breakdown` — a binary head has no distribution;
 * metric keys in a bulk `summary` are present-but-null rather than absent;
 * an `email` ingest payload does not leak the Pydantic alias `from_` into the state;

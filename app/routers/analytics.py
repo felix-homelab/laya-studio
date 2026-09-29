@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..schemas import CalibrationRefitResponse
+from ..serializers import snapshot_to_dict
 from ..services import analytics as analytics_service
 from ..services import calibration as calibration_service
 
@@ -64,23 +65,7 @@ def calibration(
     """ECE, Brier, the reliability diagram and the ECE-per-day trend."""
     report = analytics_service.calibration_monitor(db, hours=hours)
     report["snapshots"] = [
-        {
-            "id": snapshot.id,
-            "primitive": snapshot.primitive,
-            "question": snapshot.question,
-            "schema_id": snapshot.schema_id,
-            "n_samples": snapshot.n_samples,
-            "slope": snapshot.slope,
-            "intercept": snapshot.intercept,
-            "temperature": snapshot.temperature,
-            "ece": snapshot.ece,
-            "mce": snapshot.mce,
-            "brier": snapshot.brier,
-            "accuracy": snapshot.accuracy,
-            "mean_confidence": snapshot.mean_confidence,
-            "created_at": snapshot.created_at.isoformat(),
-        }
-        for snapshot in calibration_service.latest_snapshots(db)
+        snapshot_to_dict(snapshot) for snapshot in calibration_service.latest_snapshots(db)
     ]
     return report
 
@@ -110,21 +95,7 @@ def refit(db: Session = Depends(get_db)) -> CalibrationRefitResponse:
             ),
         )
     return CalibrationRefitResponse(
-        snapshots=[
-            {
-                "id": snapshot.id,
-                "question": snapshot.question,
-                "schema_id": snapshot.schema_id,
-                "slope": snapshot.slope,
-                "intercept": snapshot.intercept,
-                "temperature": snapshot.temperature,
-                "n_samples": snapshot.n_samples,
-                "ece": snapshot.ece,
-                "accuracy": snapshot.accuracy,
-                "mean_confidence": snapshot.mean_confidence,
-            }
-            for snapshot in snapshots
-        ],
+        snapshots=[snapshot_to_dict(snapshot) for snapshot in snapshots],
         message=f"Refit {len(snapshots)} slice(s).",
     )
 

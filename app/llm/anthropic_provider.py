@@ -68,10 +68,10 @@ class AnthropicProvider(LLMProvider):
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPStatusError as exc:
-            detail = exc.response.text[:500]
-            raise LLMUnavailable(
-                f"Anthropic returned {exc.response.status_code}: {detail}"
-            ) from exc
+            # Error bodies can echo the request, prompt included, and this message
+            # is logged and persisted with the run — so the body stays at debug level.
+            logger.debug("Anthropic error body: %s", exc.response.text[:500])
+            raise LLMUnavailable(f"Anthropic returned HTTP {exc.response.status_code}.") from exc
         except httpx.HTTPError as exc:
             raise LLMUnavailable(f"Anthropic request failed: {exc}") from exc
         except ValueError as exc:
@@ -79,22 +79,31 @@ class AnthropicProvider(LLMProvider):
 
         latency_ms = (perf_counter() - started) * 1000.0
 
-        blocks = data.get("content")
+        # Errors name the shape, not the body: the body carries model output
+        # derived from the state, and these messages are logged and persisted.
+        blocks = data.get("content") if isinstance(data, dict) else None
         if not isinstance(blocks, list):
-            raise LLMUnavailable(f"Unexpected Anthropic response shape: {data}")
+            raise LLMUnavailable(f"Unexpected Anthropic response shape: {_shape(data)}")
 
-        text = "".join(
-            block.get("text", "")
-            for block in blocks
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
+        parts: list[str] = []
+        for block in blocks:
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            piece = block.get("text", "")
+            if not isinstance(piece, str):
+                raise LLMUnavailable(
+                    f"Anthropic returned a text block whose text is {type(piece).__name__}."
+                )
+            parts.append(piece)
+        text = "".join(parts)
 
+        usage = data.get("usage")
         return LLMResponse(
             text=text,
             provider=self.name,
-            model=str(data.get("model", self._model)),
+            model=str(data.get("model") or self._model),
             latency_ms=latency_ms,
-            usage=dict(data.get("usage", {}) or {}),
+            usage=dict(usage) if isinstance(usage, dict) else {},
             raw={"id": data.get("id"), "stop_reason": data.get("stop_reason")},
         )
 
@@ -105,3 +114,10 @@ class AnthropicProvider(LLMProvider):
             "model": self._model,
             "base_url": self._base_url,
         }
+
+
+def _shape(data: object) -> str:
+    """Describe a payload by its type and top-level keys, never its contents."""
+    if isinstance(data, dict):
+        return f"object with keys {sorted(str(key) for key in data)}"
+    return type(data).__name__

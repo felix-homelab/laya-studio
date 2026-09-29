@@ -119,6 +119,23 @@ def decide_route(
 # ---------------------------------------------------------------------------
 
 
+def _validate_steps(steps: list[dict[str, Any]]) -> None:
+    """Reject steps whose ``on`` or ``kind`` the engine would never act on."""
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            raise WorkflowError(f"Step {index} must be an object.")
+        target = str(step.get("on", "auto"))
+        if target not in STEP_TARGETS:
+            raise WorkflowError(
+                f"Step {index} has on={target!r}; expected one of {', '.join(STEP_TARGETS)}."
+            )
+        if str(step.get("kind", "noop")) not in action_service.SUPPORTED_ACTIONS:
+            raise WorkflowError(
+                f"Step {index} has kind={step.get('kind')!r}; expected one of "
+                f"{', '.join(action_service.SUPPORTED_ACTIONS)}."
+            )
+
+
 def list_workflows(db: Session, *, enabled_only: bool = False) -> list[Workflow]:
     statement = select(Workflow).order_by(Workflow.name.asc())
     if enabled_only:
@@ -158,20 +175,7 @@ def create_workflow(
 ) -> Workflow:
     settings = get_settings()
     resolved_steps = steps if steps is not None else []
-
-    for index, step in enumerate(resolved_steps):
-        if not isinstance(step, dict):
-            raise WorkflowError(f"Step {index} must be an object.")
-        target = str(step.get("on", "auto"))
-        if target not in STEP_TARGETS:
-            raise WorkflowError(
-                f"Step {index} has on={target!r}; expected one of {', '.join(STEP_TARGETS)}."
-            )
-        if str(step.get("kind", "noop")) not in action_service.SUPPORTED_ACTIONS:
-            raise WorkflowError(
-                f"Step {index} has kind={step.get('kind')!r}; expected one of "
-                f"{', '.join(action_service.SUPPORTED_ACTIONS)}."
-            )
+    _validate_steps(resolved_steps)
 
     resolved_auto = auto_threshold if auto_threshold is not None else settings.auto_threshold
     resolved_verify = (
@@ -220,6 +224,10 @@ def update_workflow(
     verify_threshold: float | None = None,
     commit: bool = True,
 ) -> Workflow:
+    # Validate before touching the workflow, so a rejected update changes nothing.
+    if steps is not None:
+        _validate_steps(steps)
+
     if name is not None:
         workflow.name = name.strip() or workflow.name
     if description is not None:
@@ -323,7 +331,7 @@ def run_workflow(
 
     if route == "verify":
         verification = _verify(
-            db, run, workflow, schema, evaluation, question, choice, confidence, primary, commit=False
+            db, run, schema, evaluation, question, choice, confidence, primary, commit=False
         )
         if verification.status == "ok" and verification.choice:
             run.final_choice = verification.choice
@@ -341,11 +349,7 @@ def run_workflow(
         choice=run.final_choice,
         confidence=confidence,
         state_text=evaluation.state_text,
-        reason=(
-            "verification_disagreement"
-            if verification is not None and verification.status == "ok" and not verification.agrees
-            else ("verification_unavailable" if verification is not None and verification.status != "ok" else "low_confidence")
-        ),
+        reason=_route_reason(route, verification),
         alternatives=alternatives,
         run=run,
         extra={
@@ -359,14 +363,23 @@ def run_workflow(
         target = str(step.get("on", "auto"))
         if target not in ("always", effective_route):
             continue
-        result = action_service.execute(
-            db,
-            kind=str(step.get("kind", "noop")),
-            config=step.get("config") or {},
-            context=context,
-            settings=settings,
-            commit=False,
-        )
+        kind = str(step.get("kind", "noop"))
+        try:
+            result = action_service.execute(
+                db,
+                kind=kind,
+                config=step.get("config") or {},
+                context=context,
+                settings=settings,
+                commit=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - one broken step must not sink the run
+            # Actions are meant to report failure rather than raise; if one does
+            # anyway, record it as a failed action and keep going.
+            logger.exception("Workflow %s step %r raised", workflow.key, kind)
+            result = action_service.ActionOutcome(
+                kind=kind, status="failed", error=f"{type(exc).__name__}: {exc}"
+            )
         action_service.log_outcome(db, result, run=run, commit=False)
         executed.append(result.to_dict())
 
@@ -403,10 +416,19 @@ def run_workflow(
     )
 
 
+def _route_reason(route: str, verification: VerificationVerdict | None) -> str:
+    """Why the run took its route — ``{reason}`` in action templates."""
+    if verification is not None:
+        if verification.status != "ok" or not verification.choice:
+            # Could not verify, so the run escalated (fails closed).
+            return "verification_unavailable"
+        return "verified_agreement" if verification.agrees else "verification_disagreement"
+    return "auto_confidence" if route == "auto" else "low_confidence"
+
+
 def _verify(
     db: Session,
     run: WorkflowRun,
-    workflow: Workflow,
     schema: EvalSchema,
     evaluation: Evaluation,
     question: str,

@@ -68,12 +68,27 @@ class _SafeDict(dict):
         return "{" + key + "}"
 
 
+class _FlatFormatter(string.Formatter):
+    """Plain ``{name}`` lookups only.
+
+    Templates are operator-authored, so ``{state.items}``-style attribute and
+    ``{state[key]}`` index traversal is refused rather than letting a config walk
+    into object internals.
+    """
+
+    def get_field(self, field_name: str, args: Any, kwargs: Any) -> Any:
+        if "." in field_name or "[" in field_name:
+            raise KeyError(field_name)
+        return super().get_field(field_name, args, kwargs)
+
+
 def render(value: Any, context: dict[str, Any]) -> Any:
     """Recursively substitute ``{placeholder}`` in a config structure."""
     if isinstance(value, str):
         try:
-            return string.Formatter().vformat(value, (), _SafeDict(context))
-        except (ValueError, KeyError, IndexError):
+            return _FlatFormatter().vformat(value, (), _SafeDict(context))
+        except (ValueError, KeyError, IndexError, AttributeError, TypeError):
+            # e.g. a bad format spec, or ``{confidence:d}`` on a float.
             return value
     if isinstance(value, dict):
         return {key: render(item, context) for key, item in value.items()}
@@ -87,13 +102,17 @@ def render(value: Any, context: dict[str, Any]) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def assert_public_target(url: str, settings: Settings | None = None) -> None:
+def assert_public_target(url: str, settings: Settings | None = None) -> str | None:
     """Refuse webhook targets that point inside the network.
 
     Ingestion is unauthenticated by default, so an unguarded webhook action is a
     server-side request forgery primitive against the cloud metadata service and
     any internal admin surface. Hosts explicitly listed in
     ``LAYA_STUDIO_WEBHOOK_ALLOWED_HOSTS`` bypass the check.
+
+    Returns the vetted address the request must connect to (so a second DNS
+    lookup at connect time cannot be rebound to an internal address), or ``None``
+    for an allow-listed host, which is resolved normally.
     """
     settings = settings or get_settings()
     parsed = urlparse(url)
@@ -105,10 +124,11 @@ def assert_public_target(url: str, settings: Settings | None = None) -> None:
         raise UnsafeTarget("Webhook URL has no host.")
 
     if host in settings.webhook_allowed_hosts:
-        return
+        return None
 
     try:
-        addresses = {info[4][0] for info in socket.getaddrinfo(host, None)}
+        # Ordered and de-duplicated, so the pinned address is the resolver's first choice.
+        addresses = list(dict.fromkeys(info[4][0] for info in socket.getaddrinfo(host, None)))
     except socket.gaierror as exc:
         raise UnsafeTarget(f"Could not resolve webhook host {host!r}: {exc}") from exc
 
@@ -130,10 +150,18 @@ def assert_public_target(url: str, settings: Settings | None = None) -> None:
                 "Add it to LAYA_STUDIO_WEBHOOK_ALLOWED_HOSTS if this is intentional."
             )
 
+    if not addresses:  # pragma: no cover - getaddrinfo raises rather than return nothing
+        raise UnsafeTarget(f"Could not resolve webhook host {host!r}.")
+    return addresses[0]
+
 
 # ---------------------------------------------------------------------------
 # Individual actions
 # ---------------------------------------------------------------------------
+
+#: Verbs a webhook step may use; only the body-carrying ones send the payload.
+WEBHOOK_METHODS = ("POST", "PUT", "PATCH", "DELETE", "GET")
+_BODY_METHODS = ("POST", "PUT", "PATCH")
 
 
 def webhook_action(
@@ -154,8 +182,13 @@ def webhook_action(
 
     outcome = ActionOutcome(kind="webhook", target=url, request={"method": method, "payload": payload})
 
+    if method not in WEBHOOK_METHODS:
+        outcome.status = "failed"
+        outcome.error = f"Unsupported webhook method {method!r}; expected one of {', '.join(WEBHOOK_METHODS)}."
+        return outcome
+
     try:
-        assert_public_target(url, settings)
+        address = assert_public_target(url, settings)
     except UnsafeTarget as exc:
         outcome.status = "failed"
         outcome.error = str(exc)
@@ -163,13 +196,26 @@ def webhook_action(
 
     started = perf_counter()
     try:
-        response = httpx.request(
-            method,
-            url,
-            json=payload,
-            headers=headers,
-            timeout=settings.webhook_timeout,
-        )
+        request_url: httpx.URL | str = url
+        extensions: dict[str, Any] = {}
+        if address is not None:
+            # Connect to the address that was vetted rather than letting httpx
+            # resolve the name again (a DNS-rebinding window), while keeping the
+            # original name in the Host header and in TLS SNI/certificate checks.
+            original = httpx.URL(url)
+            request_url = original.copy_with(host=address)
+            if not any(key.lower() == "host" for key in headers):
+                headers["Host"] = original.netloc.decode("ascii")
+            extensions["sni_hostname"] = original.raw_host.decode("ascii")
+
+        with httpx.Client(timeout=settings.webhook_timeout) as client:
+            response = client.request(
+                method,
+                request_url,
+                json=payload if method in _BODY_METHODS else None,
+                headers=headers,
+                extensions=extensions,
+            )
         outcome.latency_ms = (perf_counter() - started) * 1000.0
         outcome.status = "ok" if response.is_success else "failed"
         outcome.response = {
@@ -179,7 +225,7 @@ def webhook_action(
         outcome.detail = f"{response.status_code} in {outcome.latency_ms:.0f}ms"
         if not response.is_success:
             outcome.error = f"Endpoint returned {response.status_code}."
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
         outcome.latency_ms = (perf_counter() - started) * 1000.0
         outcome.status = "failed"
         outcome.error = f"{type(exc).__name__}: {exc}"
@@ -290,7 +336,13 @@ def review_action(
             model_confidence=context.get("confidence"),
             alternatives=context.get("alternatives") or [],
             reason=str(config.get("reason") or context.get("reason") or "low_confidence"),
-            priority=int(config.get("priority") or context.get("priority") or 0),
+            # `is not None`, not `or`: an explicit priority of 0 must win over the
+            # route default in the context.
+            priority=int(
+                config["priority"]
+                if config.get("priority") is not None
+                else context.get("priority") or 0
+            ),
             commit=commit,
         )
     except Exception as exc:  # noqa: BLE001 - never break the run

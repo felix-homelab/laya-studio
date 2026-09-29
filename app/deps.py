@@ -10,6 +10,25 @@ from fastapi import Header, HTTPException, status
 from .config import get_settings
 
 
+def _check_token(provided: str | None, expected: str | None, header: str) -> None:
+    """Reject the request unless ``provided`` matches ``expected``.
+
+    An unset ``expected`` leaves the surface open. Both sides are compared as
+    UTF-8 bytes: :func:`hmac.compare_digest` raises ``TypeError`` on a ``str``
+    with non-ASCII characters, and a header value is whatever the client sent.
+    """
+    if not expected:
+        return
+    # Constant-time compare so the token cannot be recovered byte-by-byte.
+    if not provided or not hmac.compare_digest(
+        provided.encode("utf-8"), expected.encode("utf-8")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Missing or invalid {header}.",
+        )
+
+
 def require_ingest_token(
     x_ingest_token: Annotated[str | None, Header(alias="X-Ingest-Token")] = None,
 ) -> None:
@@ -20,15 +39,7 @@ def require_ingest_token(
     the endpoints are open — appropriate for a local panel, and called out
     prominently in the UI and in ``docs/deployment.md``.
     """
-    expected = get_settings().ingest_token
-    if not expected:
-        return
-    # Constant-time compare so the token cannot be recovered byte-by-byte.
-    if not x_ingest_token or not hmac.compare_digest(x_ingest_token, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid X-Ingest-Token.",
-        )
+    _check_token(x_ingest_token, get_settings().ingest_token, "X-Ingest-Token")
 
 
 def require_observability_token(
@@ -43,11 +54,6 @@ def require_observability_token(
     :func:`require_ingest_token` makes. Set ``LAYA_STUDIO_OBSERVABILITY_TOKEN``
     before exposing the panel to anything else.
     """
-    expected = get_settings().observability_token
-    if not expected:
-        return
-    if not x_observability_token or not hmac.compare_digest(x_observability_token, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid X-Observability-Token.",
-        )
+    _check_token(
+        x_observability_token, get_settings().observability_token, "X-Observability-Token"
+    )

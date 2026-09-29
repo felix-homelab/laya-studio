@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 from mcp.server.mcpserver import MCPServer
 
@@ -25,9 +26,13 @@ def register(server: MCPServer, panel: Panel) -> None:
         and the workflow's actions for real; `dry_run=True` evaluates and returns the
         route without a single action, which is the right first call against an
         unfamiliar workflow.
+
+        Pass the state as `state` (a string or an object), or pass `text` as
+        shorthand for `{"text": ...}`. When both are given, `state` wins and `text`
+        is ignored.
         """
         return await panel.post(
-            f"/api/ingest/{workflow_key}",
+            f"/api/ingest/{quote(workflow_key, safe='')}",
             tool="ingest",
             json={
                 "state": state,
@@ -41,7 +46,7 @@ def register(server: MCPServer, panel: Panel) -> None:
     async def ingest_text(workflow_key: str, text: str) -> Any:
         """The plain-text door: a raw body, no JSON envelope, for dumb senders."""
         return await panel.post(
-            f"/api/ingest/{workflow_key}/text",
+            f"/api/ingest/{quote(workflow_key, safe='')}/text",
             tool="ingest_text",
             data=text,
         )
@@ -58,7 +63,7 @@ def register(server: MCPServer, panel: Panel) -> None:
         """Ingest a parsed inbound email: `from`, `to`, `subject` and `body` become
         the state the schema's questions are asked about."""
         return await panel.post(
-            f"/api/ingest/email/{workflow_key}",
+            f"/api/ingest/email/{quote(workflow_key, safe='')}",
             tool="ingest_email",
             json={
                 "from": from_,

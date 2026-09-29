@@ -26,6 +26,8 @@ Split them, and place the boundary at the layer rule.
 * `inference/calibration.py` — **pure, dependency-free maths.** No imports from
   `models`, `db`, or `services`. `calibration_report`, `reliability_bins`,
   `fit_temperature`, `apply_temperature`, `apply_temperature_to_distribution`.
+  (The fitter is now `fit_platt`; see [0010](0010-platt-not-temperature.md). The
+  layer split below is unchanged.)
 * `services/calibration.py` — **stateful operational logic.** Queries labelled
   evaluations, applies the `min_samples` guard, caches per `(schema, question)` with
   a TTL, persists `CalibrationSnapshot` rows, and exposes `ActiveCalibration`.
@@ -48,9 +50,9 @@ generally (see [architecture.md](../architecture.md#layers)).
 
   Twelve of the calibration tests are like this — hand-computed values, no
   database. They run in milliseconds and they test the actual mathematics.
-* No scipy, no numpy. `fit_temperature` uses a 200-point log-spaced sweep plus
-  golden-section refinement — about 40 lines, deterministic, and it does not
-  assume unimodality outright.
+* No scipy, no numpy. The fitter is plain Python and deterministic — originally a
+  log-spaced temperature sweep, now `fit_platt`'s IRLS (see
+  [0010](0010-platt-not-temperature.md)).
 * The maths is reusable from a notebook or a script with no application context.
 
 **Bad.**

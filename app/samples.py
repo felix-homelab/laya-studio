@@ -16,7 +16,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from .models import EvalSchema
+from .models import BulkJob, EvalSchema
 from .services import bulk as bulk_service
 from .services import decision_schemas
 
@@ -54,12 +54,16 @@ def load_sample(
     state_column: str | None = None,
     label_column: str = "truth",
     model: str | None = None,
-) -> tuple[EvalSchema, object]:
+) -> tuple[EvalSchema, BulkJob]:
     """Evaluate a bundled dataset end to end and return its bulk job.
 
     Goes through ``bulk.create_job`` / ``attach_rows`` / ``run_job`` — the same
     code the upload endpoint uses — so the result is an ordinary job you can
     inspect, rerun and A/B against.
+
+    Raises :class:`SampleError` for anything wrong with the sample itself, bulk
+    validation included. ``EngineNotReady`` / ``EngineUnavailable`` from the run
+    propagate unchanged: they are about the engine, not the sample.
     """
     if filename not in SAMPLE_DATASETS:
         raise SampleError(
@@ -77,18 +81,21 @@ def load_sample(
         raise SampleError(f"Sample {filename!r} needs schema {schema_key!r}, which is missing.")
 
     content = path.read_bytes()
-    dataset = bulk_service.parse_dataset(content, filename)
+    try:
+        dataset = bulk_service.parse_dataset(content, filename)
 
-    job = bulk_service.create_job(
-        db,
-        name=SAMPLE_DATASETS[filename][1],
-        content=content,
-        filename=filename,
-        schema=schema,
-        state_column=state_column,
-        label_column=label_column,
-        model=model,
-    )
-    bulk_service.attach_rows(db, job, dataset)
-    bulk_service.run_job(db, job)
+        job = bulk_service.create_job(
+            db,
+            name=SAMPLE_DATASETS[filename][1],
+            content=content,
+            filename=filename,
+            schema=schema,
+            state_column=state_column,
+            label_column=label_column,
+            model=model,
+        )
+        bulk_service.attach_rows(db, job, dataset)
+        bulk_service.run_job(db, job)
+    except bulk_service.BulkError as exc:
+        raise SampleError(f"Sample {filename!r} could not be evaluated: {exc}") from exc
     return schema, job

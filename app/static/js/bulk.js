@@ -1,7 +1,7 @@
 /* Bulk testing: upload, job metrics, row preview. */
 
 (() => {
-  const { api, toast, escapeHtml, pct, num, barTone, summarizeState } = window.LayaStudio;
+  const { api, toast, escapeHtml, pct, num, barTone, statusClasses, summarizeState } = window.LayaStudio;
 
   const form = document.getElementById('upload-form');
   const uploadBtn = document.getElementById('upload-btn');
@@ -62,7 +62,7 @@
     return `
       <div class="rounded-xl border border-slate-800 bg-slate-950/50 px-3.5 py-2.5">
         <p class="text-[11px] font-medium uppercase tracking-wider text-slate-500">${label}</p>
-        <p class="mt-0.5 text-xl font-semibold text-slate-100">${value}</p>
+        <p class="mt-0.5 text-xl font-semibold text-slate-100">${escapeHtml(value)}</p>
         ${hint ? `<p class="mt-0.5 text-[11px] text-slate-500">${hint}</p>` : ''}
       </div>`;
   }
@@ -171,7 +171,7 @@
         <div>
           <h2 class="text-sm font-semibold text-slate-100">${escapeHtml(job.name)}</h2>
           <p class="mt-0.5 text-xs text-slate-400">
-            ${escapeHtml(job.filename || 'pasted data')} · schema #${job.schema_id ?? '—'} ·
+            ${escapeHtml(job.filename || 'pasted data')} · schema #${escapeHtml(job.schema_id ?? '—')} ·
             ${escapeHtml(job.status)}
           </p>
         </div>
@@ -222,6 +222,13 @@
     }
   }
 
+  /** Wire the job rows: the server-rendered ones at startup, and every refresh. */
+  function wireJobRows() {
+    jobList.querySelectorAll('[data-job-id]').forEach((node) => {
+      node.addEventListener('click', () => openJob(Number(node.dataset.jobId)));
+    });
+  }
+
   async function refreshList() {
     try {
       const rows = await api('/api/bulk/jobs?limit=30');
@@ -235,13 +242,11 @@
                 ${job.summary && job.summary.accuracy != null ? pct(job.summary.accuracy) + ' accuracy' : 'no labels'}
               </span>
             </span>
-            <span class="shrink-0 rounded-full px-2 py-0.5 text-[11px] ${job.status === 'failed' ? 'bg-rose-500/15 text-rose-300' : 'bg-emerald-500/15 text-emerald-300'}">${escapeHtml(job.status)}</span>
+            <span class="shrink-0 rounded-full px-2 py-0.5 text-[11px] ${statusClasses(job.status)}">${escapeHtml(job.status)}</span>
           </button>`).join('')
         : '<p class="px-5 py-6 text-center text-xs text-slate-500">No jobs yet.</p>';
 
-      jobList.querySelectorAll('[data-job-id]').forEach((node) => {
-        node.addEventListener('click', () => openJob(Number(node.dataset.jobId)));
-      });
+      wireJobRows();
     } catch (error) {
       toast(error.message, 'error');
     }
@@ -255,11 +260,11 @@
     const body = new FormData();
     body.append('file', file);
     body.append('schema_id', document.getElementById('schema-select').value);
-    const stateColumn = document.getElementById('state-column').value.trim();
-    const labelColumn = document.getElementById('label-column').value.trim();
+    const stateColumnValue = stateColumn.value.trim();
+    const labelColumnValue = labelColumn.value.trim();
     const name = document.getElementById('job-name').value.trim();
-    if (stateColumn) body.append('state_column', stateColumn);
-    if (labelColumn) body.append('label_column', labelColumn);
+    if (stateColumnValue) body.append('state_column', stateColumnValue);
+    if (labelColumnValue) body.append('label_column', labelColumnValue);
     if (name) body.append('name', name);
 
     uploadBtn.disabled = true;
@@ -279,7 +284,5 @@
     }
   });
 
-  jobList.querySelectorAll('[data-job-id]').forEach((node) => {
-    node.addEventListener('click', () => openJob(Number(node.dataset.jobId)));
-  });
+  wireJobRows();
 })();

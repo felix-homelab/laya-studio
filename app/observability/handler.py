@@ -23,6 +23,15 @@ class JsonlLogHandler(logging.Handler):
         super().__init__(level=level)
         self.store = store
 
+    def filter(self, record: logging.LogRecord) -> bool | logging.LogRecord:
+        # uvicorn's access lines duplicate the middleware's request records; they
+        # stay on stderr (where uvicorn puts them) but do not need a second copy
+        # here. Dropped at the handler rather than by raising the logger's level,
+        # which would silence them on stderr too, for everyone in the process.
+        if record.name == "uvicorn.access" or record.name.startswith("uvicorn.access."):
+            return False
+        return super().filter(record)
+
     def emit(self, record: logging.LogRecord) -> None:
         try:
             self.store.write(log_record_to_dict(record))
@@ -38,15 +47,28 @@ def attach_jsonl_handler(
 ) -> JsonlLogHandler:
     """Attach one handler to each named logger. Idempotent.
 
-    Returns the handler so a caller can detach it again (tests do).
+    Returns the handler so a caller can detach it again (tests do). A second call
+    reuses the handler already attached — pointing it at ``store`` — rather than
+    returning a new one that nothing is attached to.
     """
-    handler = JsonlLogHandler(store, level=level)
-    for name in loggers:
+    names = tuple(loggers)
+    handler = next(
+        (
+            existing
+            for name in names
+            for existing in logging.getLogger(name).handlers
+            if isinstance(existing, JsonlLogHandler)
+        ),
+        None,
+    )
+    if handler is None:
+        handler = JsonlLogHandler(store, level=level)
+    else:
+        handler.store = store
+        handler.setLevel(level)
+    for name in names:
         logger = logging.getLogger(name)
         if any(isinstance(existing, JsonlLogHandler) for existing in logger.handlers):
             continue
         logger.addHandler(handler)
-    # uvicorn's access lines duplicate the middleware's request records; they stay
-    # on stderr (where uvicorn puts them) but do not need a second copy here.
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     return handler

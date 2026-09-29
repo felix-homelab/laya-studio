@@ -45,7 +45,13 @@ class LLMProvider(abc.ABC):
         max_tokens: int = 512,
         temperature: float = 0.0,
     ) -> LLMResponse:
-        """Run one completion and return the assistant text."""
+        """Run one completion and return the assistant text.
+
+        Raises :class:`LLMUnavailable` when the provider is not configured, the
+        call fails, or the response cannot be read. Implementations translate
+        their own transport and parsing errors into it rather than letting them
+        escape; callers treat it as "could not verify" and fail closed.
+        """
 
     def describe(self) -> dict[str, Any]:
         return {"provider": self.name, "available": self.available()}

@@ -39,5 +39,10 @@ def reset(token: Token) -> None:
 
 
 def current() -> dict[str, Any] | None:
-    """The active context, or ``None`` outside a request."""
-    return _context.get()
+    """A copy of the active context, or ``None`` outside a request.
+
+    A copy, so a caller that edits what it gets back cannot change the context for
+    the rest of the request.
+    """
+    context = _context.get()
+    return dict(context) if context is not None else None

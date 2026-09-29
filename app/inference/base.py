@@ -309,13 +309,16 @@ def extract_score(answer: dict[str, Any]) -> float | None:
         total = sum(probabilities.values())
         if total <= 0:
             return None
-        # Levels may be non-numeric labels; fall back to ordinal position.
+        # Levels may be non-numeric labels. Place those by the legend when it names
+        # them, otherwise by the order the payload lists them in — which is rubric
+        # order. Sorting them would be alphabetical: High, Low, Medium.
+        levels = {level: _as_index(key) for key, level in extract_legend(answer).items()}
         numeric: dict[str, float] = {}
-        for index, label in enumerate(sorted(probabilities)):
+        for index, label in enumerate(probabilities):
             try:
                 numeric[label] = float(label)
             except ValueError:
-                numeric[label] = float(index)
+                numeric[label] = float(levels.get(label, index))
         return sum(numeric[label] * probability for label, probability in probabilities.items()) / total
     return None
 
@@ -417,7 +420,7 @@ def build_question_results(
             {
                 "question": name,
                 "type": primitive,
-                "instructions": str(definition.get("instructions", "")),
+                "instructions": str(definition.get("instructions") or ""),
                 "choice": extract_choice(answer) if is_choice else None,
                 "level": _top_level(breakdown) if is_score else None,
                 "confidence": None if confidence is None else round(confidence, 6),
@@ -496,11 +499,22 @@ def _max_score(legend: dict[str, str], probabilities: dict[str, float]) -> float
     keys = list(legend) or list(probabilities)
     if not keys:
         return None
-    indices = [_as_index(key) for key in keys]
-    try:
-        return float(max(indices))
-    except ValueError:  # pragma: no cover - _as_index never raises
-        return None
+    return float(max(_as_index(key) for key in keys))
+
+
+#: Fields whose presence marks a dict as an answer rather than metadata.
+_ANSWER_MARKERS = (
+    "type",
+    "choice",
+    "top_choice",
+    "label",
+    "score",
+    "noul",
+    "confidence",
+    "probabilities",
+    "probability",
+    "distribution",
+)
 
 
 def normalize_result(
@@ -516,11 +530,15 @@ def normalize_result(
 
     answers = raw.get("answers")
     if not isinstance(answers, dict):
-        # Some surfaces return the answer map at the top level.
+        # Some surfaces return the answer map at the top level. Only adopt entries
+        # that carry an answer field, so metadata objects such as ``usage`` are not
+        # reported as questions.
         answers = {
             key: value
             for key, value in raw.items()
-            if key not in ("routing", "model", "latency_ms") and isinstance(value, dict)
+            if key not in ("routing", "model", "latency_ms")
+            and isinstance(value, dict)
+            and any(marker in value for marker in _ANSWER_MARKERS)
         }
 
     routing = raw.get("routing")
@@ -590,7 +608,7 @@ def validate_questions(questions: Any) -> list[dict[str, str]]:
                 }
             )
 
-        if not str(definition.get("instructions", "")).strip():
+        if not str(definition.get("instructions") or "").strip():
             findings.append(
                 {
                     "severity": "warning",

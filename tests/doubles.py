@@ -61,6 +61,8 @@ def _surface_score(state_tokens: set[str], state_lower: str, surface: str) -> fl
 def _softmax(logits: list[float]) -> list[float]:
     import math
 
+    if not logits:  # a question with no options: callers fall back to neutral values
+        return []
     peak = max(logits)
     exponents = [math.exp(value - peak) for value in logits]
     total = sum(exponents)

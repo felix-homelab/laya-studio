@@ -35,16 +35,11 @@ body {
 
 /* Panels are fluid: they stretch to their grid cell and never force the shell
    wider than the viewport. min-width:0 lets them shrink inside flex/grid tracks
-   instead of overflowing. */
+   instead of overflowing. They also settle smoothly — between hover, mount and
+   resize — rather than snapping to the new size or colour. */
 main section,
 main article {
   min-width: 0;
-}
-
-/* Card-like panels settle smoothly — between hover, mount and resize — rather
-   than snapping to the new size or colour. */
-main section,
-main article {
   transition:
     background-color 160ms ease,
     border-color 160ms ease,

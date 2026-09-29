@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import icon, badge, empty, stat, status_chip %}
+{% from "_macros.html" import icon, empty, status_chip %}
 
 {% block title %}Bulk testing{% endblock %}
 {% block heading %}Bulk testing{% endblock %}
@@ -47,8 +47,9 @@
           </label>
         </div>
         <p class="text-[11px] text-slate-500">
-          Pick the columns from the file — the list fills in as soon as the dataset is chosen,
-          and you can still type a name it has not seen yet.
+          Pick the columns from the file — the list fills in as soon as the dataset is chosen.
+          A name the file does not have is not an error: an unknown text column falls back
+          to scoring every column, and an unknown label column just drops accuracy and ECE.
         </p>
 
         <label class="block">

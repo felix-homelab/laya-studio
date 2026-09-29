@@ -72,8 +72,11 @@ class OpenAIProvider(LLMProvider):
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPStatusError as exc:
-            detail = exc.response.text[:500]
-            raise LLMUnavailable(f"OpenAI returned {exc.response.status_code}: {detail}") from exc
+            # Gateway error bodies can echo the request, prompt included, and this
+            # message is logged and persisted with the run — so the body stays at
+            # debug level.
+            logger.debug("OpenAI error body: %s", exc.response.text[:500])
+            raise LLMUnavailable(f"OpenAI returned HTTP {exc.response.status_code}.") from exc
         except httpx.HTTPError as exc:
             raise LLMUnavailable(f"OpenAI request failed: {exc}") from exc
         except ValueError as exc:
@@ -81,17 +84,33 @@ class OpenAIProvider(LLMProvider):
 
         latency_ms = (perf_counter() - started) * 1000.0
 
+        # The error names the shape, not the body: the body carries model output
+        # derived from the state, and this message is logged and persisted.
         try:
-            text = data["choices"][0]["message"]["content"] or ""
+            content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMUnavailable(f"Unexpected OpenAI response shape: {data}") from exc
+            raise LLMUnavailable(
+                f"Unexpected OpenAI response shape: {_shape(data)}"
+            ) from exc
 
+        # Some compatible gateways return a list of content parts, or a tool call
+        # with no text at all; only a plain string is an answer.
+        if content is None:
+            text = ""
+        elif isinstance(content, str):
+            text = content
+        else:
+            raise LLMUnavailable(
+                f"OpenAI returned non-text message content ({type(content).__name__})."
+            )
+
+        usage = data.get("usage")
         return LLMResponse(
             text=text,
             provider=self.name,
-            model=str(data.get("model", self._model)),
+            model=str(data.get("model") or self._model),
             latency_ms=latency_ms,
-            usage=dict(data.get("usage", {}) or {}),
+            usage=dict(usage) if isinstance(usage, dict) else {},
             raw={"id": data.get("id"), "finish_reason": _finish_reason(data)},
         )
 
@@ -102,6 +121,13 @@ class OpenAIProvider(LLMProvider):
             "model": self._model,
             "base_url": self._base_url,
         }
+
+
+def _shape(data: object) -> str:
+    """Describe a payload by its type and top-level keys, never its contents."""
+    if isinstance(data, dict):
+        return f"object with keys {sorted(str(key) for key in data)}"
+    return type(data).__name__
 
 
 def _finish_reason(data: dict) -> str | None:

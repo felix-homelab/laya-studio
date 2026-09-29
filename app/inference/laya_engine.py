@@ -125,6 +125,7 @@ class LayaEngine(DecisionEngine):
         except Exception as exc:  # noqa: BLE001 - surface any runtime failure
             raise EngineUnavailable(f"Failed to construct laya.Router({kwargs}): {exc}") from exc
 
+        self._predict_takes_model = self._accepts_keyword(self._router.predict, "model")
         self._install_head_max_len()
         self._warm_up()
         self._prime_inference()
@@ -143,6 +144,11 @@ class LayaEngine(DecisionEngine):
 
     @staticmethod
     def _prepare_environment(*, cache_dir: str | None, offline: bool) -> None:
+        # Deliberately process-wide: huggingface_hub and transformers read these
+        # from the environment, not from arguments, so there is no narrower scope
+        # to set them in. Laya is the only HF consumer in this process; anything
+        # added later inherits the same cache and offline policy.
+        #
         # Silence the HF tokenizer thread warning storm.
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         if cache_dir:
@@ -171,6 +177,21 @@ class LayaEngine(DecisionEngine):
         if (device and device != "auto") and ("device" in parameters or not parameters):
             kwargs["device"] = device
         return kwargs
+
+    @staticmethod
+    def _accepts_keyword(function: Any, keyword: str) -> bool:
+        """Whether ``function`` takes ``keyword``, probed once rather than per call.
+
+        Probing up front beats catching ``TypeError`` from the call itself, which
+        cannot tell a missing keyword apart from a genuine failure inside it.
+        """
+        try:
+            parameters = inspect.signature(function).parameters
+        except (TypeError, ValueError):  # pragma: no cover - exotic extension types
+            return True
+        return keyword in parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+        )
 
     def _warm_up(self) -> None:
         """Load the routed checkpoints up front when configured.
@@ -266,10 +287,12 @@ class LayaEngine(DecisionEngine):
         if not isinstance(config, dict):
             return
 
-        if self._max_len is not None:
-            config["max_len"] = int(self._max_len)
-
-        sequence_limit = int(config.get("max_len", 512))
+        # Validate against the limit that *would* apply, and only then write both
+        # fields, so a refusal leaves the checkpoint exactly as it shipped rather
+        # than half-reconfigured.
+        sequence_limit = (
+            int(self._max_len) if self._max_len is not None else int(config.get("max_len", 512))
+        )
         # Leave room for [CLS], the two separators, and some state.
         safe_ceiling = sequence_limit - 32
         if head_max_len > safe_ceiling:
@@ -283,13 +306,16 @@ class LayaEngine(DecisionEngine):
             )
             return
 
+        config["max_len"] = sequence_limit
         config["head_max_len"] = head_max_len
         logger.debug("Applied max_len=%s head_max_len=%s", sequence_limit, head_max_len)
 
     def _loaded_checkpoints(self) -> list[str]:
         collection = getattr(self._router, "_agents", None)
         if isinstance(collection, dict):
-            return sorted(str(key) for key in collection)
+            # Snapshot first: a concurrent load or LRU eviction mutates this dict,
+            # and iterating it live can raise "dictionary changed size".
+            return sorted(str(key) for key in list(collection))
         return []
 
     # -- contract -----------------------------------------------------------
@@ -316,14 +342,20 @@ class LayaEngine(DecisionEngine):
                 raise ValueError(
                     f"Unknown checkpoint {model!r}; expected one of {', '.join(ALL_CHECKPOINTS)}."
                 )
-            call_kwargs["model"] = model
+            if self._predict_takes_model:
+                call_kwargs["model"] = model
+            else:
+                logger.warning(
+                    "The installed laya.Router.predict() takes no `model` keyword; "
+                    "ignoring the request for %r and auto-routing instead.",
+                    model,
+                )
 
         try:
             raw = self._router.predict(state, questions, **call_kwargs)
-        except TypeError:
-            # Signature without the ``model`` keyword.
-            raw = self._router.predict(state, questions)
         except ValueError as exc:
+            # Laya raises a plain ValueError here, so the message is the only signal.
+            # tests/test_real_laya.py pins the wording against the real runtime.
             if "head_max_len" in str(exc):
                 # Laya ran out of sequence room for the options. This is a schema
                 # problem with a specific remedy, so say so rather than letting a

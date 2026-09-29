@@ -181,7 +181,11 @@ class TokenGate:
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if self.token:
             provided = self._provided(scope)
-            if not provided or not hmac.compare_digest(provided, self.token):
+            # Bytes, not str: compare_digest raises TypeError on a non-ASCII str,
+            # and a stray byte in a header must be a 401, not a 500.
+            if not provided or not hmac.compare_digest(
+                provided.encode("utf-8"), self.token.encode("utf-8")
+            ):
                 response = JSONResponse(
                     {
                         "error": "unauthorized",
@@ -284,7 +288,7 @@ async def lifespan(app_state: Any, settings: Any) -> AsyncIterator[None]:
         return
 
     sub = transport(server, settings)
-    endpoint.bind(TokenGate(_endpoint_of(sub, sub.routes[0].path), settings.mcp_token))
+    endpoint.bind(TokenGate(_endpoint_of(sub, DEFAULT_PATH), getattr(settings, "mcp_token", None)))
     try:
         tools = await server.list_tools()
         logger.info(

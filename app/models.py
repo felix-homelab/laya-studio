@@ -130,8 +130,9 @@ class SchemaRevision(Base):
     __table_args__ = (UniqueConstraint("schema_id", "revision", name="uq_schema_revision"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # No index of its own: ``uq_schema_revision`` leads with this column.
     schema_id: Mapped[int] = mapped_column(
-        ForeignKey("eval_schemas.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("eval_schemas.id", ondelete="CASCADE"), nullable=False
     )
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     definition: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
@@ -161,7 +162,12 @@ class Evaluation(Base, TimestampMixin):
         ForeignKey("eval_schemas.id", ondelete="SET NULL"), nullable=True, index=True
     )
     schema_revision_id: Mapped[int | None] = mapped_column(
-        ForeignKey("schema_revisions.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("schema_revisions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # Overrides the mixin's column only to drop its index: the leading column of
+    # ``ix_evaluations_created_source`` already serves created_at lookups.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
     )
 
     # The state handed to the model (dict or {"text": ...}).
@@ -217,7 +223,7 @@ class BulkJob(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     schema_id: Mapped[int | None] = mapped_column(
-        ForeignKey("eval_schemas.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("eval_schemas.id", ondelete="SET NULL"), nullable=True, index=True
     )
     filename: Mapped[str] = mapped_column(Text, default="", nullable=False)
     status: Mapped[str] = mapped_column(Text, default="pending", nullable=False, index=True)
@@ -242,15 +248,17 @@ class BulkJob(Base, TimestampMixin):
 
 class BulkJobItem(Base):
     __tablename__ = "bulk_job_items"
+    # One item per input row. Also the job_id index: it leads with job_id.
+    __table_args__ = (UniqueConstraint("job_id", "row_index", name="uq_bulk_job_item_row"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     job_id: Mapped[int] = mapped_column(
-        ForeignKey("bulk_jobs.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("bulk_jobs.id", ondelete="CASCADE"), nullable=False
     )
     row_index: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     evaluation_id: Mapped[int | None] = mapped_column(
-        ForeignKey("evaluations.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("evaluations.id", ondelete="SET NULL"), nullable=True, index=True
     )
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
     predicted: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -272,13 +280,13 @@ class ABTest(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     schema_id: Mapped[int | None] = mapped_column(
-        ForeignKey("eval_schemas.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("eval_schemas.id", ondelete="SET NULL"), nullable=True, index=True
     )
     revision_a_id: Mapped[int | None] = mapped_column(
-        ForeignKey("schema_revisions.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("schema_revisions.id", ondelete="SET NULL"), nullable=True, index=True
     )
     revision_b_id: Mapped[int | None] = mapped_column(
-        ForeignKey("schema_revisions.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("schema_revisions.id", ondelete="SET NULL"), nullable=True, index=True
     )
     status: Mapped[str] = mapped_column(Text, default="pending", nullable=False, index=True)
     dataset: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
@@ -294,10 +302,12 @@ class ABTest(Base, TimestampMixin):
 
 class ABTestItem(Base):
     __tablename__ = "ab_test_items"
+    # One item per dataset row. Also the test_id index: it leads with test_id.
+    __table_args__ = (UniqueConstraint("test_id", "row_index", name="uq_ab_test_item_row"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     test_id: Mapped[int] = mapped_column(
-        ForeignKey("ab_tests.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("ab_tests.id", ondelete="CASCADE"), nullable=False
     )
     row_index: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
@@ -337,7 +347,7 @@ class Workflow(Base, TimestampMixin):
     trigger_config: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
     schema_id: Mapped[int | None] = mapped_column(
-        ForeignKey("eval_schemas.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("eval_schemas.id", ondelete="SET NULL"), nullable=True, index=True
     )
     # Which question drives the routing decision. Empty = first question.
     decision_question: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -374,10 +384,11 @@ class WorkflowRun(Base, TimestampMixin):
         ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True
     )
     evaluation_id: Mapped[int | None] = mapped_column(
-        ForeignKey("evaluations.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("evaluations.id", ondelete="SET NULL"), nullable=True, index=True
     )
     status: Mapped[str] = mapped_column(Text, default="pending", nullable=False, index=True)
-    route: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    # Indexed through ``ix_workflow_runs_route_created``, which leads with it.
+    route: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Double, nullable=True)
     # Resolved verdict after any verification step.
     final_choice: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -433,10 +444,10 @@ class ReviewItem(Base, TimestampMixin):
         ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True, index=True
     )
     workflow_run_id: Mapped[int | None] = mapped_column(
-        ForeignKey("workflow_runs.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("workflow_runs.id", ondelete="SET NULL"), nullable=True, index=True
     )
     evaluation_id: Mapped[int | None] = mapped_column(
-        ForeignKey("evaluations.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("evaluations.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
     state: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
@@ -449,7 +460,8 @@ class ReviewItem(Base, TimestampMixin):
 
     reason: Mapped[str] = mapped_column(Text, default="low_confidence", nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False, index=True)
-    status: Mapped[str] = mapped_column(Text, default="pending", nullable=False, index=True)
+    # Indexed through ``ix_review_items_status_priority``, which leads with it.
+    status: Mapped[str] = mapped_column(Text, default="pending", nullable=False)
     assignee: Mapped[str | None] = mapped_column(Text, nullable=True)
     corrected_label: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str] = mapped_column(Text, default="", nullable=False)

@@ -30,6 +30,13 @@ def _resolve_schema(db: Session, schema_id: int | None, schema_key: str | None) 
         schema = decision_schemas.get_schema(db, schema_id)
         if schema is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"No schema with id {schema_id}.")
+        # Both given is fine as long as they agree; a stale id must not silently
+        # win over the key the caller meant.
+        if schema_key and schema.key != schema_key:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"schema_id {schema_id} is {schema.key!r}, not {schema_key!r}; send one or the other.",
+            )
         return schema
     if schema_key:
         schema = decision_schemas.get_schema_by_key(db, schema_key)

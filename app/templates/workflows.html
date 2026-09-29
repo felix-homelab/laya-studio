@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import icon, badge, empty, status_chip %}
+{% from "_macros.html" import badge %}
 
 {% block title %}Workflows{% endblock %}
 {% block heading %}Workflow automation{% endblock %}
@@ -35,7 +35,7 @@
             <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Schema</span>
             <select id="wf-schema" aria-label="Schema this workflow evaluates"
               class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-600">
-              {% for schema in schemas %}<option value="{{ schema.id }}">{{ schema.name }}</option>{% endfor %}
+              {% for schema in schemas %}<option value="{{ schema.id }}">{{ schema.name }}</option>{% else %}<option value="">No schemas yet</option>{% endfor %}
             </select>
           </label>
           <label class="block">
@@ -52,12 +52,12 @@
           <div class="mt-2 grid grid-cols-2 gap-3">
             <label class="block">
               <span class="laya-label">Act at or above</span>
-              <input id="wf-auto" type="number" min="0" max="1" step="0.05" value="0.9"
+              <input id="wf-auto" type="number" min="0" max="1" step="0.05" value="{{ auto_threshold }}"
                 class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-sky-600">
             </label>
             <label class="block">
               <span class="laya-label">Verify at or above</span>
-              <input id="wf-verify" type="number" min="0" max="1" step="0.05" value="0.6"
+              <input id="wf-verify" type="number" min="0" max="1" step="0.05" value="{{ verify_threshold }}"
                 class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-sky-600">
             </label>
           </div>

@@ -4,16 +4,23 @@
 .env
 .env.*
 !.env.example
+# Key material and client credentials that tend to sit next to a DSN.
+*.pem
+*.key
+*.p12
+*.pfx
+.pgpass
+.netrc
 
 # --- Python -----------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *.so
 .venv/
-venv/
-env/
-build/
-dist/
+/venv/
+/env/
+/build/
+/dist/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
@@ -29,14 +36,16 @@ node_modules/
 .prisma/
 
 # --- runtime data -----------------------------------------------------------
-# Runtime scratch: uploads, rotated JSONL logs and tracebacks. The app recreates
-# both directories on boot (app/config.py), and `make clean` wipes them anyway.
-data/
+# Runtime state at the repo root (BASE_DIR / "data"): upload scratch, rotated JSONL
+# logs and tracebacks. The app recreates both directories on boot (app/config.py);
+# `make clean` wipes the uploads but keeps the logs. Anchored, so a nested
+# `tests/data/` fixture directory is not ignored by accident.
+/data/
 
 # --- model weights ----------------------------------------------------------
 # Hugging Face cache (HF_HOME), populated by `docker compose up` (~1.4 GB) or by
 # `huggingface-cli download ... --local-dir ./models/...`. Rebuildable, not source.
-models/
+/models/
 
 # --- containers -------------------------------------------------------------
 # The database lives in a named compose volume (laya-pgdata), so there is no

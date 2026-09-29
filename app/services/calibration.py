@@ -35,10 +35,6 @@ logger = logging.getLogger(__name__)
 #: Reliability-diagram resolution.
 N_BINS = 10
 
-_lock = threading.Lock()
-_cache: dict[tuple[int | None, str], tuple[PlattFit, datetime]] = {}
-
-
 @dataclass(slots=True)
 class ActiveCalibration:
     """The recalibration map the evaluator should apply, and why."""
@@ -74,6 +70,11 @@ class ActiveCalibration:
             "n_samples": self.n_samples,
             "note": self.note,
         }
+
+
+_lock = threading.Lock()
+#: The resolved calibration (fit plus its sample count and note) and its expiry.
+_cache: dict[tuple[int | None, str], tuple[ActiveCalibration, datetime]] = {}
 
 
 def clear_cache() -> None:
@@ -179,9 +180,12 @@ def get_active_calibration(
     *,
     schema_id: int | None,
     question: str | None,
-    primitive: str = "choice",
 ) -> ActiveCalibration:
-    """Resolve the temperature to apply now, using the cache then a fresh fit."""
+    """Resolve the temperature to apply now, using the cache then a fresh fit.
+
+    Keyed by (schema, question): a question name has one type within a schema,
+    so the primitive adds nothing to the key.
+    """
     settings = get_settings()
     if not settings.calibration_enabled:
         return ActiveCalibration(note="Calibration disabled by configuration.")
@@ -192,10 +196,14 @@ def get_active_calibration(
     with _lock:
         cached = _cache.get(cache_key)
     if cached is not None and cached[1] > now:
-        fit, _ = cached
-        if fit.is_identity:
-            return ActiveCalibration(source="cached", note="Cached identity mapping.")
-        return ActiveCalibration(fit=fit, source="cached")
+        stored, _ = cached
+        # Keep the sample count and note from the fit that was cached.
+        return ActiveCalibration(
+            fit=stored.fit,
+            source="cached",
+            n_samples=stored.n_samples,
+            note=stored.note or ("Cached identity mapping." if stored.is_identity else ""),
+        )
 
     confidences, correct = _labelled_pairs(db, schema_id=schema_id, question=question)
 
@@ -226,28 +234,39 @@ def get_active_calibration(
 
     expiry = now + timedelta(seconds=max(settings.calibration_cache_ttl, 0))
     with _lock:
-        _cache[cache_key] = (result.fit, expiry)
+        # Expired entries are only skipped on read; drop them here so a stream of
+        # distinct (schema, question) keys cannot grow the cache without bound.
+        for key in [key for key, (_, expires) in _cache.items() if expires <= now]:
+            del _cache[key]
+        _cache[cache_key] = (result, expiry)
     return result
 
 
 def latest_snapshots(db: Session, *, schema_id: int | None = None, limit: int = 50):
     """Most recent calibration snapshot per (schema, question) slice."""
-    statement = select(CalibrationSnapshot)
+    # Rank within each slice in SQL, so `limit` counts distinct slices however
+    # many snapshots the busiest slices have accumulated.
+    rank = (
+        func.row_number()
+        .over(
+            partition_by=(CalibrationSnapshot.schema_id, CalibrationSnapshot.question),
+            order_by=(CalibrationSnapshot.created_at.desc(), CalibrationSnapshot.id.desc()),
+        )
+        .label("rank")
+    )
+    ranked = select(CalibrationSnapshot.id, rank)
     if schema_id is not None:
-        statement = statement.where(CalibrationSnapshot.schema_id == schema_id)
-    statement = statement.order_by(CalibrationSnapshot.created_at.desc()).limit(limit * 4)
+        ranked = ranked.where(CalibrationSnapshot.schema_id == schema_id)
+    latest = ranked.subquery()
 
-    seen: set[tuple[int | None, str]] = set()
-    output: list[CalibrationSnapshot] = []
-    for snapshot in db.scalars(statement):
-        key = (snapshot.schema_id, snapshot.question)
-        if key in seen:
-            continue
-        seen.add(key)
-        output.append(snapshot)
-        if len(output) >= limit:
-            break
-    return output
+    statement = (
+        select(CalibrationSnapshot)
+        .join(latest, latest.c.id == CalibrationSnapshot.id)
+        .where(latest.c.rank == 1)
+        .order_by(CalibrationSnapshot.created_at.desc(), CalibrationSnapshot.id.desc())
+        .limit(limit)
+    )
+    return list(db.scalars(statement))
 
 
 def snapshot_count(db: Session) -> int:

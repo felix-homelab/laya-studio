@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=68"]
+# 77+ for the PEP 639 SPDX `license` string below.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +9,7 @@ version = "0.1.0"
 description = "Web panel for building, evaluating and automating Laya typed-decision schemas."
 readme = "README.md"
 requires-python = ">=3.10"  # laya requires 3.10+
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 
 dependencies = [
     "fastapi>=0.110",
@@ -40,10 +41,21 @@ laya-studio = "app.cli:main"
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+# The panel's Jinja templates and static assets are loaded from the package
+# directory (app/templating.py), so a wheel without them cannot render a page.
+[tool.setuptools.package-data]
+app = ["templates/**/*", "static/**/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-filterwarnings = ["ignore::DeprecationWarning"]
+filterwarnings = [
+    # torch / transformers are noisy about their own internals...
+    "ignore::DeprecationWarning",
+    # ...but a deprecation attributed to this project's code is the early warning
+    # of the next breaking upgrade, so keep those visible (last match wins).
+    "default::DeprecationWarning:app\\.",
+]
 markers = [
     "real_laya: loads real Laya checkpoints (deselected unless --real-laya)",
     "drift: runs the Prisma migrations against a scratch database to check for schema drift",

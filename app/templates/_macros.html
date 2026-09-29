@@ -52,10 +52,9 @@
       <h2 class="text-sm font-semibold text-slate-100">{{ title }}</h2>
       {% if subtitle %}<p class="mt-0.5 text-xs text-slate-400">{{ subtitle }}</p>{% endif %}
     </div>
-    {{ caller() if caller is defined and false else "" }}
   </header>
   {% endif %}
-  <div class="p-5">{{ caller() }}</div>
+  <div class="p-5">{{ caller() if caller else "" }}</div>
 </section>
 {% endmacro %}
 
@@ -68,9 +67,8 @@
 {% endmacro %}
 
 {% macro band_chip(band) %}
-{%- set labels = {"act": "Act", "verify": "Verify", "escalate": "Escalate", "unknown": "No signal"} -%}
 <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset {{ band|band_color }}">
-  <span class="h-1.5 w-1.5 rounded-full bg-current"></span>{{ labels.get(band, "Unknown") }}
+  <span class="h-1.5 w-1.5 rounded-full bg-current"></span>{{ band|band_label }}
 </span>
 {% endmacro %}
 
@@ -87,6 +85,8 @@
 
 {% macro bar(value, tone="bg-sky-500") %}
 <div class="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
-  <div class="h-full rounded-full {{ tone }}" style="width: {{ (value * 100) if value is not none else 0 }}%"></div>
+  {#- Coerce and clamp, so a stray string or out-of-range ratio cannot leak into the style. -#}
+  {%- set width = [[(value|float(0)) * 100, 0]|max, 100]|min -%}
+  <div class="h-full rounded-full {{ tone }}" style="width: {{ width }}%"></div>
 </div>
 {% endmacro %}

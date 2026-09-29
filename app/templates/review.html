@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import icon, badge, empty, stat %}
+{% from "_macros.html" import empty, stat %}
 
 {% block title %}Review queue{% endblock %}
 {% block heading %}Manual review queue{% endblock %}
@@ -24,7 +24,8 @@
     <header class="flex flex-wrap items-center gap-3 border-b border-slate-800 px-5 py-3">
       <div class="flex gap-1 rounded-lg bg-slate-950/60 p-1">
         {% for value, label in [('open', 'Open'), ('pending', 'Pending'), ('corrected', 'Corrected'), ('approved', 'Approved'), ('all', 'All')] %}
-        <a href="/review?status={{ value }}"
+        {# "All" is an empty status: the page maps that to no filter and highlights it as 'all'. #}
+        <a href="/review?status={{ '' if value == 'all' else value }}"
            class="rounded-md px-2.5 py-1 text-[11px] font-medium {{ 'bg-slate-800 text-slate-100' if status_filter == value else 'text-slate-400 hover:text-slate-200' }}">{{ label }}</a>
         {% endfor %}
       </div>

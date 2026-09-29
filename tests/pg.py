@@ -11,7 +11,6 @@ instead; Docker is then not needed at all (CI usually does this).
 from __future__ import annotations
 
 import os
-import socket
 import subprocess
 import time
 import uuid
@@ -38,10 +37,11 @@ def _docker_available() -> bool:
     return result.returncode == 0
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
+def _published_port(container: str) -> int:
+    """The host port Docker picked for the container's 5432."""
+    mapping = _run(["docker", "port", container, "5432/tcp"]).stdout
+    # One line, e.g. ``127.0.0.1:49153``, since only loopback is published.
+    return int(mapping.strip().splitlines()[0].rsplit(":", 1)[1])
 
 
 def _run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -89,7 +89,6 @@ def start() -> PostgresServer:
         )
 
     container = f"laya-studio-test-pg-{uuid.uuid4().hex[:8]}"
-    port = _free_port()
     try:
         _run(
             [
@@ -98,14 +97,22 @@ def start() -> PostgresServer:
                 "-e", "POSTGRES_USER=laya",
                 "-e", "POSTGRES_PASSWORD=laya",
                 "-e", "POSTGRES_DB=laya_test",
-                "-p", f"{port}:5432",
+                # Loopback only, and let Docker pick the host port: probing for a
+                # free one first races with anything else starting up meanwhile.
+                "-p", "127.0.0.1::5432",
                 IMAGE,
             ]
         )
+        port = _published_port(container)
         _wait_until_ready(container)
     except Exception as exc:  # noqa: BLE001 - clean up then report
         _run(["docker", "rm", "-f", container], check=False)
         raise PostgresUnavailable(f"Could not start a test PostgreSQL: {exc}") from exc
+    except BaseException:
+        # Ctrl-C while waiting. `--rm` only fires once the container exits, which a
+        # healthy Postgres never does, so remove it here or it outlives the run.
+        _run(["docker", "rm", "-f", container], check=False)
+        raise
 
     return PostgresServer(
         url=f"postgresql://laya:laya@127.0.0.1:{port}/laya_test",

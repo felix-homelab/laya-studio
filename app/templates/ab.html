@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import icon, badge, empty, status_chip %}
+{% from "_macros.html" import icon, empty, status_chip %}
 
 {% block title %}A/B testing{% endblock %}
 {% block heading %}Schema A/B testing{% endblock %}
@@ -29,6 +29,8 @@
             class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-600">
             {% for schema in schemas %}
             <option value="{{ schema.id }}">{{ schema.name }}</option>
+            {% else %}
+            <option value="">No schemas yet</option>
             {% endfor %}
           </select>
         </label>
@@ -47,8 +49,9 @@
         <div class="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
           <span class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Dataset</span>
           <div class="mt-2 flex gap-1 rounded-lg bg-slate-900 p-1">
-            <button type="button" data-dataset-mode="job" class="flex-1 rounded-md px-2 py-1 text-[11px] font-medium text-slate-400">From a bulk job</button>
-            <button type="button" data-dataset-mode="rows" class="flex-1 rounded-md px-2 py-1 text-[11px] font-medium text-slate-400">Build rows</button>
+            {# Starts in "job" mode, matching ab.js; setDatasetMode() restyles both on switch. #}
+            <button type="button" data-dataset-mode="job" aria-pressed="true" class="flex-1 rounded-md px-2 py-1 text-[11px] font-medium bg-slate-800 text-slate-200">From a bulk job</button>
+            <button type="button" data-dataset-mode="rows" aria-pressed="false" class="flex-1 rounded-md px-2 py-1 text-[11px] font-medium text-slate-400 hover:text-slate-200">Build rows</button>
           </div>
 
           <div id="dataset-job" class="mt-2">

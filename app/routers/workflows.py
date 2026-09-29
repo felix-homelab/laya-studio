@@ -19,6 +19,7 @@ from ..schemas import (
 from ..serializers import to_evaluation_response
 from ..services import evaluation as evaluation_service
 from ..services import workflows as workflow_service
+from .ingest import dry_run as ingest_dry_run
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
@@ -173,12 +174,17 @@ def run_workflow(
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
+    if payload.dry_run:
+        # Same contract as the ingestion endpoint: no actions, no run.
+        return ingest_dry_run(db, workflow, state, source="workflow")
+
     outcome = workflow_service.run_workflow(
         db,
         workflow,
         state=state,
         source="workflow",
-        payload={"manual": True, **payload.metadata},
+        # The marker goes last so caller metadata cannot overwrite it.
+        payload={**payload.metadata, "manual": True},
     )
     return {
         "run": WorkflowRunSummary.model_validate(outcome.run).model_dump(),

@@ -8,6 +8,7 @@ replayed against the exact taxonomy that produced it.
 
 from __future__ import annotations
 
+import copy
 import re
 import unicodedata
 from collections.abc import Iterable
@@ -55,8 +56,12 @@ def derive_primitive(questions: dict[str, dict[str, Any]]) -> str:
 
 
 def normalize_definition(questions: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Canonical stored form of a question bundle."""
-    return {"questions": {str(name): dict(definition) for name, definition in questions.items()}}
+    """Canonical stored form of a question bundle.
+
+    Deep-copied, so nested ``criteria`` are never aliased to the caller's input
+    (or to ``TEMPLATE_DEFINITIONS``) and immutable revisions stay immutable.
+    """
+    return {"questions": {str(name): copy.deepcopy(dict(definition)) for name, definition in questions.items()}}
 
 
 def lint(questions: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
@@ -89,11 +94,11 @@ def list_schemas(
         statement = statement.where(
             EvalSchema.name.ilike(pattern) | EvalSchema.key.ilike(pattern)
         )
-    statement = statement.order_by(EvalSchema.is_template.asc(), EvalSchema.name.asc())
-    schemas = list(db.scalars(statement.limit(limit)))
     if tag:
-        schemas = [item for item in schemas if tag in (item.tags or [])]
-    return schemas
+        # Filter before LIMIT (JSONB `@>`), or matches past the first page are lost.
+        statement = statement.where(EvalSchema.tags.contains([tag]))
+    statement = statement.order_by(EvalSchema.is_template.asc(), EvalSchema.name.asc())
+    return list(db.scalars(statement.limit(limit)))
 
 
 def get_schema(db: Session, schema_id: int) -> EvalSchema | None:
@@ -200,8 +205,20 @@ def update_schema(
             raise ValueError(_format_lint_error(findings))
 
         definition = normalize_definition(questions)
-        if definition != schema.definition:
-            schema.current_revision += 1
+        # Lock the schema row and read the committed revision, so concurrent edits
+        # mint consecutive revisions instead of colliding on uq_schema_revision.
+        # Flush first so an unflushed earlier edit in this session is what we read.
+        db.flush()
+        locked = db.execute(
+            select(EvalSchema.current_revision, EvalSchema.definition)
+            .where(EvalSchema.id == schema.id)
+            .with_for_update()
+        ).first()
+        current_revision, current_definition = (
+            locked if locked is not None else (schema.current_revision, schema.definition)
+        )
+        if definition != current_definition:
+            schema.current_revision = current_revision + 1
             schema.definition = definition
             schema.primitive = derive_primitive(definition["questions"])
             db.add(

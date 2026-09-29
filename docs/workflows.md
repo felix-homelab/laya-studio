@@ -95,7 +95,9 @@ the first run instead of appearing to do nothing.
 Every string in a step's `config` is formatted against the run context with
 `str.format_map`. Unknown placeholders are **left intact** rather than blanked, so
 a typo in a payload template shows up in the ActionLog instead of silently sending
-an empty field.
+an empty field. Only plain `{name}` lookups are substituted: attribute and index
+forms such as `{verification.choice}` or `{verification[choice]}` are left intact
+too.
 
 | Placeholder | Value |
 |---|---|
@@ -104,7 +106,7 @@ an empty field.
 | `{route}`, `{effective_route}` | |
 | `{question}`, `{choice}`, `{confidence}` | |
 | `{state_text}` | the flattened state |
-| `{reason}` | why it was escalated |
+| `{reason}` | why the run took its route: `auto_confidence`, `low_confidence`, `verified_agreement`, `verification_disagreement` or `verification_unavailable` |
 | `{priority}` | 100 for `review`, else 0 |
 | `{verification}` | the verdict dict, when one ran |
 
@@ -129,7 +131,9 @@ an empty field.
 ```
 
 Omit `payload` and a sensible default is sent (workflow, route, question, choice,
-confidence, state, evaluation id).
+confidence, state, evaluation id). `method` is one of `POST` (the default), `PUT`,
+`PATCH`, `DELETE` or `GET`; anything else is logged as a failed action. `DELETE`
+and `GET` send no body.
 
 #### SSRF protection
 

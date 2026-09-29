@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from ..db import get_db
@@ -58,6 +59,44 @@ def _respond(outcome, dry_run: bool) -> dict[str, Any]:
     }
 
 
+def dry_run(db: Session, workflow, state: dict[str, Any] | str, *, source: str) -> dict[str, Any]:
+    """Evaluate and show the routing decision without executing any actions.
+
+    Shared with the manual trigger in :mod:`app.routers.workflows`, so a dry run
+    means the same thing on every door.
+    """
+    schema = None
+    if workflow.schema_id:
+        from ..models import EvalSchema
+
+        schema = db.get(EvalSchema, workflow.schema_id)
+    try:
+        outcome_eval = evaluation_service.run_evaluation(
+            db,
+            state=state,
+            schema=schema,
+            source=source,
+            primary_question=workflow.decision_question,
+        )
+    except evaluation_service.InvalidQuestions as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    confidence = outcome_eval.evaluation.confidence
+    route = workflow_service.decide_route(
+        confidence, workflow.auto_threshold, workflow.verify_threshold
+    )
+    return {
+        "dry_run": True,
+        "route": route,
+        "effective_route": route,
+        "verification": None,
+        "actions": [],
+        "run": None,
+        "evaluation": to_evaluation_response(outcome_eval.evaluation).model_dump(),
+        "error": None,
+    }
+
+
 @router.post("/email/{workflow_key}", summary="Ingest a parsed inbound email")
 def ingest_email(
     workflow_key: str,
@@ -76,7 +115,8 @@ def ingest_email(
         workflow,
         state={key: value for key, value in state.items() if value},
         source="email",
-        payload={"channel": "email", **payload.metadata},
+        # The channel marker goes last so caller metadata cannot overwrite it.
+        payload={**payload.metadata, "channel": "email"},
     )
     return _respond(outcome, dry_run=False)
 
@@ -93,14 +133,19 @@ async def ingest_text(
     if not body:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "The request body is empty.")
 
-    outcome = workflow_service.run_workflow(
-        db,
-        workflow,
-        state={"text": body},
-        source="api",
-        payload={"channel": "text"},
-    )
-    return _respond(outcome, dry_run=False)
+    # Async only to read the raw body; the run itself is synchronous DB, model
+    # and action work, so it runs off the event loop.
+    def run() -> dict[str, Any]:
+        outcome = workflow_service.run_workflow(
+            db,
+            workflow,
+            state={"text": body},
+            source="api",
+            payload={"channel": "text"},
+        )
+        return _respond(outcome, dry_run=False)
+
+    return await run_in_threadpool(run)
 
 
 @router.post("/{workflow_key}")
@@ -117,43 +162,13 @@ def ingest(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
     if payload.dry_run:
-        # Evaluate and show the routing decision without executing any actions.
-        schema = None
-        if workflow.schema_id:
-            from ..models import EvalSchema
-
-            schema = db.get(EvalSchema, workflow.schema_id)
-        try:
-            outcome_eval = evaluation_service.run_evaluation(
-                db,
-                state=state,
-                schema=schema,
-                source="api",
-                primary_question=workflow.decision_question,
-            )
-        except evaluation_service.InvalidQuestions as exc:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-
-        confidence = outcome_eval.evaluation.confidence
-        route = workflow_service.decide_route(
-            confidence, workflow.auto_threshold, workflow.verify_threshold
-        )
-        return {
-            "dry_run": True,
-            "route": route,
-            "effective_route": route,
-            "verification": None,
-            "actions": [],
-            "run": None,
-            "evaluation": to_evaluation_response(outcome_eval.evaluation).model_dump(),
-            "error": None,
-        }
+        return dry_run(db, workflow, state, source="api")
 
     outcome = workflow_service.run_workflow(
         db,
         workflow,
         state=state,
         source="api",
-        payload={"channel": "api", **payload.metadata},
+        payload={**payload.metadata, "channel": "api"},
     )
     return _respond(outcome, dry_run=False)

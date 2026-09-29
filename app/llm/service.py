@@ -78,36 +78,40 @@ def build_provider(settings: Settings | None = None) -> LLMProvider | None:
     return None
 
 
-_cached_provider: LLMProvider | None = None
-_cached_signature: tuple | None = None
+# (signature, provider) as one tuple, so a concurrent rebuild can never pair a
+# provider with another configuration's signature.
+_cached: tuple[tuple, LLMProvider | None] | None = None
 
 
 def get_provider(settings: Settings | None = None) -> LLMProvider | None:
     """Return the cached provider for the current configuration."""
-    global _cached_provider, _cached_signature
+    global _cached
 
     settings = settings or get_settings()
+    # Everything build_provider() reads, so a rotated key or a changed timeout
+    # rebuilds the provider instead of reusing one holding the old value.
     signature = (
         settings.llm_provider,
         settings.openai_model,
         settings.openai_base_url,
         settings.anthropic_model,
         settings.anthropic_base_url,
-        bool(settings.openai_api_key),
-        bool(settings.anthropic_api_key),
+        settings.openai_api_key,
+        settings.anthropic_api_key,
+        settings.llm_timeout,
     )
-    if _cached_signature == signature:
-        return _cached_provider
+    cached = _cached
+    if cached is not None and cached[0] == signature:
+        return cached[1]
 
-    _cached_provider = build_provider(settings)
-    _cached_signature = signature
-    return _cached_provider
+    provider = build_provider(settings)
+    _cached = (signature, provider)
+    return provider
 
 
 def reset_provider_cache() -> None:
-    global _cached_provider, _cached_signature
-    _cached_provider = None
-    _cached_signature = None
+    global _cached
+    _cached = None
 
 
 def extract_json_object(text: str) -> dict[str, Any] | None:
@@ -145,6 +149,9 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
                     try:
                         parsed = json.loads(candidate)
                     except json.JSONDecodeError:
+                        # Resume *after* the malformed object, not inside it: an
+                        # inner object is a fragment, not the verdict.
+                        start = index
                         break
                     if isinstance(parsed, dict):
                         return parsed
@@ -165,7 +172,10 @@ def build_verification_prompt(
     """Compose the adjudication prompt for one question."""
     option_lines = "\n".join(f"- {option}" for option in candidates) or "- (no options recorded)"
     confidence_text = (
-        f"{candidate_confidence:.1%}" if isinstance(candidate_confidence, float) else "unknown"
+        f"{candidate_confidence:.1%}"
+        if isinstance(candidate_confidence, (int, float))
+        and not isinstance(candidate_confidence, bool)
+        else "unknown"
     )
 
     return (
@@ -269,22 +279,39 @@ def verify_decision(
                 matched = option
                 break
 
-    agrees = payload.get("agrees")
-    if not isinstance(agrees, bool):
-        agrees = (
-            matched is not None
-            and candidate_choice is not None
-            and matched.lower() == candidate_choice.strip().lower()
+    rationale = str(payload.get("rationale", ""))[:500]
+
+    # A label we did not offer is absence of evidence, and fails closed like any
+    # other unusable reply (ADR 0003) — it must never reach auto-execution.
+    if matched is None:
+        return VerificationVerdict(
+            status="failed",
+            rationale=rationale,
+            provider=response.provider,
+            model=response.model,
+            latency_ms=response.latency_ms,
+            usage=response.usage,
+            error="Model chose a label outside the offered options.",
         )
+
+    # Agreement is a fact about the two labels, so compute it whenever both are
+    # known; the model's own ``agrees`` field is only a fallback. Otherwise a reply
+    # of {"choice": "B", "agrees": true} against a candidate "A" would auto-execute
+    # B while claiming to confirm A.
+    if candidate_choice is not None:
+        agrees = matched.lower() == candidate_choice.strip().lower()
+    else:
+        agrees = payload.get("agrees")
+        if not isinstance(agrees, bool):
+            agrees = False
 
     return VerificationVerdict(
         status="ok",
-        choice=matched or choice,
-        agrees=bool(agrees),
-        rationale=str(payload.get("rationale", ""))[:500],
+        choice=matched,
+        agrees=agrees,
+        rationale=rationale,
         provider=response.provider,
         model=response.model,
         latency_ms=response.latency_ms,
         usage=response.usage,
-        error=None if matched else "Model chose a label outside the offered options.",
     )

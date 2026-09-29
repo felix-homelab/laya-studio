@@ -15,7 +15,7 @@ import argparse
 import json
 import sys
 
-from .config import get_settings
+from .config import get_settings, redact_dsn
 from .db import drop_schema, get_session_factory, reset_engine
 from .inference import EngineUnavailable
 from .logging_conf import configure_logging
@@ -50,7 +50,7 @@ def cmd_info(_args: argparse.Namespace) -> int:
         "app": settings.app_name,
         "version": settings.app_version,
         "environment": settings.environment,
-        "database_url": settings.database_url,
+        "database_url": redact_dsn(settings.database_url),
         "llm": {
             "provider": settings.llm_provider,
             "enabled": settings.llm_enabled,
@@ -101,12 +101,13 @@ def cmd_db_check(_args: argparse.Namespace) -> int:
         )
 
     from sqlalchemy import func, select
+    from sqlalchemy.exc import SQLAlchemyError
 
     from .db import SchemaNotMigrated, expected_tables, ping, verify_schema
     from .models import Evaluation
 
     payload: dict = {
-        "database_url": _redact(settings.database_url),
+        "database_url": redact_dsn(settings.database_url),
         "reachable": ping(),
         "migrated": False,
         "tables": {},
@@ -126,6 +127,10 @@ def cmd_db_check(_args: argparse.Namespace) -> int:
         payload["migrated"] = True
     except SchemaNotMigrated as exc:
         payload["problems"].append(str(exc))
+    except SQLAlchemyError as exc:
+        # Reachable a moment ago, but the inspection itself failed (connection
+        # dropped, missing privileges, ...). Still a report, not a traceback.
+        payload["problems"].append(f"Could not inspect the schema: {exc}")
 
     if payload["migrated"]:
         from sqlalchemy import inspect
@@ -149,13 +154,6 @@ def cmd_db_check(_args: argparse.Namespace) -> int:
     return 0 if payload["migrated"] else 1
 
 
-def _redact(url: str) -> str:
-    """Hide the password in a DSN before printing it."""
-    import re
-
-    return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", url)
-
-
 def cmd_predict(args: argparse.Namespace) -> int:
     """Score one state against one schema — the smallest end-to-end check."""
     settings = get_settings()
@@ -164,7 +162,11 @@ def cmd_predict(args: argparse.Namespace) -> int:
     from .inference import require_engine
     from .services import evaluation as evaluation_service
 
-    require_engine()
+    try:
+        require_engine()
+    except EngineUnavailable as exc:
+        print(f"Cannot evaluate: {exc}", file=sys.stderr)
+        return 1
 
     session = get_session_factory()()
     try:
@@ -285,7 +287,7 @@ def cmd_load_sample(args: argparse.Namespace) -> int:
 def cmd_purge(args: argparse.Namespace) -> int:
     settings = get_settings()
     if not args.yes:
-        answer = input(f"Drop every table in {_redact(settings.database_url)}? [y/N] ").strip().lower()
+        answer = input(f"Drop every table in {redact_dsn(settings.database_url)}? [y/N] ").strip().lower()
         if answer not in ("y", "yes"):
             print("Aborted.")
             return 1

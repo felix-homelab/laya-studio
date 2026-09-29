@@ -136,8 +136,9 @@ class QuestionResult(BaseModel):
     choice: str | None = None
     level: str | None = None
     confidence: float | None = None
-    #: Post-calibration confidence. `confidence` is the value the model reported
-    #: (Laya's entropy-based measure); this is what the ladder and the dashboards use.
+    #: The confidence the model reported (Laya's entropy-based measure), before
+    #: calibration. `confidence` above is the post-calibration value, and is what the
+    #: ladder and the dashboards use.
     raw_confidence: float | None = None
     calibrated: bool = False
     #: `1 / slope` of the fitted map, for display. None when no map was applied.
@@ -238,20 +239,11 @@ class ABTestCreate(BaseModel):
     schema_id: int
     revision_a_id: int
     revision_b_id: int
-    #: Either an explicit dataset, or a bulk job whose rows to reuse.
+    #: Either an explicit dataset, or a bulk job whose rows to reuse. Each row is an
+    #: object; `state` is optional (see :func:`app.services.ab.run_ab_test`).
     dataset: list[dict[str, Any]] | None = None
     source_job_id: int | None = None
     model: str | None = None
-
-    @field_validator("dataset")
-    @classmethod
-    def _dataset_shape(cls, value: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
-        if value is None:
-            return None
-        for index, row in enumerate(value):
-            if not isinstance(row, dict):
-                raise ValueError(f"Row {index} must be an object with a 'state' key.")
-        return value
 
 
 class ABTestSummary(ORMModel):

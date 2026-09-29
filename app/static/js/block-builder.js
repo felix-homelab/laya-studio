@@ -326,7 +326,14 @@
       if (!node || !field || field === 'method') return;
       const step = blockAt(Number(node.dataset.index));
       if (!step) return;
-      step.config[field] = field === 'priority' ? Number(event.target.value) : event.target.value;
+      if (field === 'priority') {
+        // The input's min/max are advisory only; keep the model inside them and
+        // never let a half-typed value serialize as NaN (null).
+        const parsed = Number(event.target.value);
+        step.config.priority = Number.isFinite(parsed) ? Math.min(100, Math.max(0, parsed)) : 0;
+      } else {
+        step.config[field] = event.target.value;
+      }
       emit();
     });
 
@@ -341,7 +348,11 @@
         const kind = event.target.value;
         if (!KIND_META[kind] || kind === step.kind) return;
         step.kind = kind;
-        step.config = { ...KIND_META[kind].blanks(), ...step.config };
+        // Carry over only the fields the new kind understands: a webhook's url
+        // and headers must not ride along inside an email block.
+        const blanks = KIND_META[kind].blanks();
+        const carried = Object.entries(step.config).filter(([key]) => key in blanks);
+        step.config = { ...blanks, ...Object.fromEntries(carried) };
         render();
         emit();
       } else if (event.target.matches('select[data-on]')) {
@@ -447,7 +458,10 @@
       let position = rest.length;
       const marker = event.target.closest('[data-index]');
       const reference = marker ? blockAt(Number(marker.dataset.index)) : null;
-      if (reference && reference !== step) {
+      if (reference === step) {
+        // Dropped onto itself: put it back where it was, not at the stack's end.
+        position = dragFrom;
+      } else if (reference) {
         const at = rest.indexOf(reference);
         const rect = marker.getBoundingClientRect();
         position = (at >= 0 ? at : rest.length) + (event.clientY < rect.top + rect.height / 2 ? 0 : 1);

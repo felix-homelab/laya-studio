@@ -9,9 +9,11 @@ configuration surface is explicit and testable: see :func:`get_settings` and
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ENV_PREFIX = "LAYA_STUDIO_"
@@ -51,10 +53,13 @@ def _optional_str(name: str) -> str | None:
 
 
 def _bool(name: str, default: bool = False) -> bool:
-    raw = _str(name)
-    if not raw:
-        return default
-    return raw.lower() in ("1", "true", "yes", "on")
+    raw = _str(name).lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    # Unset or unrecognised: a typo must not silently flip a `True` default.
+    return default
 
 
 def _int(name: str, default: int) -> int:
@@ -112,7 +117,7 @@ class Settings:
     upload_dir: Path = BASE_DIR / "data" / "uploads"
 
     # Inference — Laya is the only engine; there is nothing to select.
-    laya_preload: bool = False
+    laya_preload: bool = True
     laya_device: str = "auto"
     laya_cache_dir: str | None = None
     laya_head_max_len: int | None = None
@@ -184,10 +189,13 @@ class Settings:
     @property
     def database_is_local(self) -> bool:
         """True when the DSN points at this machine — used only to phrase warnings."""
-        return any(
-            host in self.database_url
-            for host in ("@localhost", "@127.0.0.1", "@::1", "@db:")
-        )
+        # Compare the parsed host, not substrings of the whole DSN; this also
+        # handles the bracketed IPv6 form (``@[::1]:5432``).
+        try:
+            host = urlsplit(self.database_url).hostname
+        except ValueError:
+            return False
+        return host in ("localhost", "127.0.0.1", "::1", "db")
 
     @property
     def max_upload_bytes(self) -> int:
@@ -266,7 +274,8 @@ def _build_settings() -> Settings:
         laya_head_max_len=_optional_int("LAYA_HEAD_MAX_LEN"),
         laya_max_len=_optional_int("LAYA_MAX_LEN"),
         laya_max_loaded=_optional_int("LAYA_MAX_LOADED"),
-        laya_token=_optional_str("LAYA_TOKEN") or _optional_str("HF_TOKEN"),
+        # HF_TOKEN is Hugging Face's own variable, so it is read unprefixed.
+        laya_token=_optional_str("LAYA_TOKEN") or os.environ.get("HF_TOKEN", "").strip() or None,
         laya_offline=_bool("LAYA_OFFLINE", False),
         calibration_enabled=_bool("CALIBRATION_ENABLED", True),
         calibration_min_samples=_int("CALIBRATION_MIN_SAMPLES", 30),
@@ -319,3 +328,12 @@ def reload_settings() -> Settings:
     """Drop the cached settings and rebuild from the current environment."""
     get_settings.cache_clear()
     return get_settings()
+
+
+def redact_dsn(url: str) -> str:
+    """Hide the password in a DSN before printing or logging it.
+
+    Greedy up to the last ``@``: SQLAlchemy accepts an unescaped ``@`` inside a
+    password, and stopping at the first one would leave the rest on display.
+    """
+    return re.sub(r"://([^:/@]+):.*@", r"://\1:***@", url, count=1)

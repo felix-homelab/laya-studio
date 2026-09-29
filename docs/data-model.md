@@ -38,6 +38,7 @@ tells you; forget the first and the migration is empty.
 | Timestamps | `timestamptz(3)`, always UTC |
 | JSON columns | `jsonb` — indexable, and what Prisma's `Json` maps to |
 | Text columns | `text`. `varchar(n)` is not used: PostgreSQL gives it no advantage, and length limits are checked in the application |
+| Foreign keys | Every FK column is indexed — PostgreSQL does not do it for you, and without one each `ON DELETE SET NULL` / `CASCADE` scans the child table. A composite or unique index that leads with the column counts; no single-column duplicate is added next to it |
 
 `created_at` and `updated_at` carry `DEFAULT CURRENT_TIMESTAMP` at the database
 level as a safety net, and are also set by the ORM. `updated_at`'s automatic bump
@@ -152,7 +153,8 @@ A CSV/JSON upload evaluated row by row.
 
 `bulk_job_items`: one row per input row — `row_index`, `state`, `label`,
 `predicted`, `confidence`, `ok`, `error`, and a nullable `evaluation_id`.
-Per-row failure isolation is deliberate: one malformed row must not fail a
+`(job_id, row_index)` is unique (`uq_bulk_job_item_row`), so a row cannot be
+counted twice. Per-row failure isolation is deliberate: one malformed row must not fail a
 2000-row job.
 
 ### `ab_tests` and `ab_test_items`
@@ -161,7 +163,8 @@ Per-row failure isolation is deliberate: one malformed row must not fail a
 `dataset` (JSON, the frozen input rows), `summary` (JSON), `finished_at`.
 
 `ab_test_items`: per row, `choice_a`/`choice_b`, `confidence_a`/`confidence_b`,
-`flipped` (bool), and the full `result_a`/`result_b` payloads.
+`flipped` (bool), and the full `result_a`/`result_b` payloads. `(test_id, row_index)`
+is unique (`uq_ab_test_item_row`); a re-run deletes the old items first.
 
 `summary` carries `flip_rate`, `agreement`, `mean_confidence_delta`,
 `transitions` (only the rows that moved), and when labels exist:

@@ -5,12 +5,16 @@ Written against the raw ASGI interface rather than Starlette's
 with ``text/event-stream``, and a middleware that buffers a response to inspect it
 would hold that stream open until the response finished — which for SSE is
 "never". This one only reads ``http.response.start`` and passes every body chunk
-straight through, so streaming is untouched.
+straight through, so streaming is untouched. (``/mcp`` itself is in the default
+skip list — see :data:`DEFAULT_SKIP_PATHS` — but the list is configurable, and any
+other streaming route passes through here.)
 
 It never touches the request body either. Debug logs that archive payloads are a
 liability — they turn an evaluation of a customer email into a second copy of that
 email on disk — and the interesting parts of a request (path, status, duration,
-correlation id, traceback) are all available without it.
+correlation id, traceback) are all available without it. The query string is
+kept, since it is usually the filter that explains the request, but the values of
+credential-looking parameters are masked first.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from time import perf_counter
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 from starlette.datastructures import MutableHeaders
 
@@ -36,8 +41,19 @@ Send = Callable[[Message], Awaitable[None]]
 #: hits /api/ready just as often — during a cold start that is a 503 every few
 #: seconds, and writing those forever would drown the records that matter. The
 #: engine's own lifecycle lines ("loading the checkpoints", "engine ready") are in
-#: the store, so "was it ready at 11:54?" is still answerable.
+#: the store, so "was it ready at 11:54?" is still answerable. ``/mcp`` is skipped
+#: because a JSON-RPC envelope says little; the API calls a tool makes are recorded
+#: on their own, attributed through :data:`MCP_TOOL_HEADER`. Each entry matches the
+#: path itself and anything below it, not every path that merely starts with it.
 DEFAULT_SKIP_PATHS = ("/static", "/api/health", "/api/ready", "/favicon.ico", "/mcp")
+
+#: Methods that only read. With request logging off, everything else is still
+#: recorded: a mutation is worth a line even when page views are not.
+READ_METHODS = ("GET", "HEAD", "OPTIONS")
+
+#: Query parameters whose values are masked before a request is recorded, along
+#: with anything ending in ``token``, ``secret`` or ``password``.
+SENSITIVE_QUERY_PARAMS = frozenset({"api_key", "apikey", "sig", "signature", "auth"})
 
 #: Set by the MCP tools on the requests they make (see app/mcp/panel.py). Without
 #: it, an agent's call into the API is indistinguishable from the UI's, which is
@@ -45,6 +61,21 @@ DEFAULT_SKIP_PATHS = ("/static", "/api/health", "/api/ready", "/favicon.ico", "/
 MCP_TOOL_HEADER = "x-laya-mcp-tool"
 
 logger = logging.getLogger(__name__)
+
+
+def _redact_query(query: str) -> str:
+    """Mask the values of credential-looking parameters in a raw query string."""
+    if not query:
+        return query
+    pairs = parse_qsl(query, keep_blank_values=True)
+    if not any(_sensitive(name) for name, _ in pairs):
+        return query
+    return urlencode([(name, "***" if _sensitive(name) else value) for name, value in pairs])
+
+
+def _sensitive(name: str) -> bool:
+    lowered = name.lower()
+    return lowered in SENSITIVE_QUERY_PARAMS or lowered.endswith(("token", "secret", "password"))
 
 
 def _header(scope: Scope, name: str) -> str | None:
@@ -78,7 +109,7 @@ class RequestLogMiddleware:
         request_id = new_request_id()
         method = scope.get("method", "GET")
         path = scope.get("path", "/")
-        query = (scope.get("query_string") or b"").decode("latin-1")
+        query = _redact_query((scope.get("query_string") or b"").decode("latin-1"))
         client = scope.get("client")
         client_text = f"{client[0]}:{client[1]}" if client else None
         mcp_tool = _header(scope, MCP_TOOL_HEADER)
@@ -114,7 +145,7 @@ class RequestLogMiddleware:
             )
             raise
         else:
-            if self.record_requests:
+            if self.record_requests or method not in READ_METHODS:
                 self._write(
                     kind="request",
                     method=method,
@@ -136,8 +167,12 @@ class RequestLogMiddleware:
             logger.debug("could not write request record", exc_info=True)
 
     def _interesting(self, scope: Scope) -> bool:
-        if not self.record_requests and scope.get("method") not in ("GET", "HEAD", "OPTIONS"):
-            # Still worth recording mutations even when request logging is off.
-            return True
+        # Everything outside the skip list goes through, request logging on or off:
+        # the bound context (the request id on every log line) and the traceback of
+        # a request that raised are wanted either way. Whether a request *record*
+        # is written is decided in __call__.
         path = scope.get("path", "")
-        return not any(path.startswith(prefix) for prefix in self.skip_paths)
+        return not any(
+            path == prefix or path.startswith(prefix.rstrip("/") + "/")
+            for prefix in self.skip_paths
+        )

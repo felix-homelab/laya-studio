@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -21,6 +24,8 @@ from ..models import (
     Workflow,
     WorkflowRun,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["health"])
 
@@ -48,8 +53,17 @@ def health(db: Session = Depends(get_db)) -> dict:
         "calibration_snapshots": CalibrationSnapshot,
     }
     tables: dict[str, int] = {}
-    for name, model in counts.items():
-        tables[name] = int(db.scalar(select(func.count(model.id))) or 0)
+    # The row counts are informational. A database that is down or unmigrated is
+    # reported as unreachable rather than turning liveness into a 500.
+    reachable = True
+    try:
+        for name, model in counts.items():
+            tables[name] = int(db.scalar(select(func.count(model.id))) or 0)
+    except SQLAlchemyError as exc:
+        logger.warning("Health check could not count rows: %s", exc)
+        db.rollback()
+        reachable = False
+        tables = {}
 
     return {
         # "ok" once the engine is usable, "starting" while it loads, "degraded"
@@ -70,7 +84,7 @@ def health(db: Session = Depends(get_db)) -> dict:
         },
         "database": {
             "dialect": db.bind.dialect.name if db.bind is not None else "unknown",
-            "reachable": True,
+            "reachable": reachable,
             "tables": tables,
         },
     }

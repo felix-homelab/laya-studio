@@ -507,7 +507,7 @@ curl -s -X POST localhost:8000/api/ab/tests -H 'Content-Type: application/json' 
     "mean_confidence_a": 0.51, "mean_confidence_b": 0.51, "mean_confidence_delta": 0.0,
     "accuracy_a": 0.75, "accuracy_b": 0.75, "accuracy_delta": 0.0,
     "fixed_by_b": 0, "broken_by_b": 0, "net_gain": 0,
-    "labelled": 4,
+    "labelled": 4, "skipped": 0,
     "transitions": [],
     "interpretation": "No answers changed. The two revisions are behaviourally identical on this dataset, so any accuracy difference you see elsewhere is sampling noise."
   },
@@ -517,7 +517,8 @@ curl -s -X POST localhost:8000/api/ab/tests -H 'Content-Type: application/json' 
 }
 ```
 
-How to read `flip_rate`, `net_gain` and `transitions`:
+`skipped` counts rows that failed to evaluate on either revision; they are left out
+of every other figure. How to read `flip_rate`, `net_gain` and `transitions`:
 [analytics-and-calibration.md](analytics-and-calibration.md#reading-an-ab-test).
 
 **422** when both revisions are the same, when they belong to different schemas,
@@ -910,7 +911,9 @@ ambiguous.
 
 ### `GET /api/observability/logs/tail?lines=50&include_traceback=false`
 
-The most recent records of any kind. The first thing to read.
+The most recent records of any kind. The first thing to read. Returns `records`
+and `count`, plus `scanned` and `truncated` — the same scan-budget fields as
+`/logs`.
 
 ### `GET /api/observability/errors?since=&limit=50&include_traceback=false`
 

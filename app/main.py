@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import get_settings
+from .config import get_settings, redact_dsn
 from .db import SchemaNotMigrated, get_session_factory, verify_schema
 from .inference import EngineNotReady, EngineUnavailable, QuestionTooLarge, start_engine
 from .logging_conf import configure_logging
@@ -46,12 +46,12 @@ async def lifespan(app: FastAPI):
             "Cannot reach the database at %s: %s: %s\n\n"
             "Laya Studio requires PostgreSQL. Check LAYA_STUDIO_DATABASE_URL and that "
             "the server is running (docs/deployment.md).",
-            settings.database_url,
+            redact_dsn(settings.database_url),
             type(exc).__name__,
             exc,
         )
         raise
-    logger.info("Database ready: %s", settings.database_url)
+    logger.info("Database ready: %s", redact_dsn(settings.database_url))
 
     session = get_session_factory()()
     try:
@@ -106,10 +106,12 @@ def create_app() -> FastAPI:
     )
 
     if settings.cors_origins:
+        # A wildcard with credentials would have Starlette echo back any origin
+        # as credentialed, so `*` means "any origin, no credentials".
         app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors_origins,
-            allow_credentials=True,
+            allow_credentials="*" not in settings.cors_origins,
             allow_methods=["*"],
             allow_headers=["*"],
         )

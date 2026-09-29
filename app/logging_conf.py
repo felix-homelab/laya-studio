@@ -32,7 +32,14 @@ def configure_logging(level: str = "INFO", *, settings: Settings | None = None) 
             )
         )
         root.addHandler(handler)
-    root.setLevel(level)
+    # LOG_LEVEL is not validated in config.py; a typo must not stop every entry
+    # point from starting, so fall back to INFO and say so below.
+    try:
+        root.setLevel(level)
+        invalid_level = False
+    except (TypeError, ValueError):
+        root.setLevel(logging.INFO)
+        invalid_level = True
 
     # Third-party chatter we never want in a panel's logs.
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -42,3 +49,7 @@ def configure_logging(level: str = "INFO", *, settings: Settings | None = None) 
     from .observability import configure as configure_observability
 
     configure_observability(settings)
+
+    if invalid_level:
+        # After the store is wired, so the warning is captured on disk too.
+        logging.getLogger(__name__).warning("Unknown log level %r; using INFO.", level)

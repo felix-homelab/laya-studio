@@ -23,12 +23,18 @@
     revisionsList: document.getElementById('revisions-list'),
   };
 
+  /** The starter bundle a new schema opens with (a fresh copy every time). */
+  const defaultQuestions = () => ({
+    decision: { type: 'choice', instructions: 'Which category does this belong to?', criteria: { first: '', second: '' } },
+  });
+
   const questions = window.LayaStudio.questionEditor(document.getElementById('editor-questions'), {
-    questions: { decision: { type: 'choice', instructions: 'Which category does this belong to?', criteria: { first: '', second: '' } } },
+    questions: defaultQuestions(),
     onChange: () => lintLater(),
   });
 
   let editing = null; // null = creating
+  let openSeq = 0; // only the latest open() may fill the editor
 
   const lintLater = debounce(lint, 400);
 
@@ -46,7 +52,7 @@
       els.lint.innerHTML = result.findings.length
         ? result.findings.map((f) => `
             <p class="text-[11px] ${f.severity === 'error' ? 'text-rose-300' : 'text-amber-300'}">
-              <span class="font-semibold">${f.severity}</span>
+              <span class="font-semibold">${escapeHtml(f.severity)}</span>
               ${f.question ? `<span class="font-mono text-slate-400">${escapeHtml(f.question)}</span>: ` : ''}
               ${escapeHtml(f.message)}</p>`).join('')
         : '<p class="text-[11px] text-emerald-300">Schema looks clean.</p>';
@@ -92,6 +98,7 @@
   }
 
   function resetEditor() {
+    openSeq += 1; // a still-loading open() must not overwrite the blank editor
     editing = null;
     els.title.textContent = 'New schema';
     els.subtitle.textContent = 'Each question is a card: name it, pick a primitive, describe the criteria.';
@@ -99,9 +106,7 @@
     els.name.value = '';
     els.tags.value = '';
     els.description.value = '';
-    questions.setQuestions({
-      decision: { type: 'choice', instructions: 'Which category does this belong to?', criteria: { first: '', second: '' } },
-    });
+    questions.setQuestions(defaultQuestions());
     els.saveLabel.textContent = 'Create schema';
     els.fork.classList.add('hidden');
     els.del.classList.add('hidden');
@@ -111,8 +116,11 @@
   }
 
   async function open(schemaId) {
+    const seq = ++openSeq;
     try {
       const schema = await api(`/api/schemas/${schemaId}`);
+      // Two quick clicks can resolve out of order; keep the last one asked for.
+      if (seq !== openSeq) return;
       editing = schema;
       els.title.textContent = schema.name;
       els.subtitle.textContent = schema.is_template
@@ -138,6 +146,7 @@
   async function loadRevisions(schemaId) {
     try {
       const rows = await api(`/api/schemas/${schemaId}/revisions`);
+      if (!editing || editing.id !== schemaId) return; // the editor moved on
       els.revisionsList.innerHTML = rows.map((rev) => `
         <div class="flex items-start justify-between gap-3 px-3 py-2.5">
           <div class="min-w-0">
@@ -180,10 +189,17 @@
           `/api/schemas/${editing.id}/fork?name=${encodeURIComponent(payload.name)}`,
           { method: 'POST' },
         );
-        await api(`/api/schemas/${forked.id}`, {
-          method: 'PUT',
-          body: JSON.stringify({ ...payload, note: `Forked from ${editing.key}` }),
-        });
+        try {
+          await api(`/api/schemas/${forked.id}`, {
+            method: 'PUT',
+            body: JSON.stringify({ ...payload, note: `Forked from ${editing.key}` }),
+          });
+        } catch (error) {
+          // Fork and edit are two requests; do not leave an unedited copy behind.
+          // The edits are still in the editor, so the user can simply retry.
+          await api(`/api/schemas/${forked.id}`, { method: 'DELETE' }).catch(() => {});
+          throw error;
+        }
         toast(`Forked into “${payload.name}”`, 'success');
         await open(forked.id);
       } else {

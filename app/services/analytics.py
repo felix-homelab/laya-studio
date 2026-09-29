@@ -73,13 +73,25 @@ class AnalyticsWindow:
 
 
 def _evaluations(db: Session, window: AnalyticsWindow) -> list[Evaluation]:
+    # Newest first so a saturated window keeps its most recent rows, then back
+    # into ascending order for the single-pass bucketing downstream.
     statement = (
         select(Evaluation)
         .where(Evaluation.created_at >= window.start)
-        .order_by(Evaluation.created_at.asc())
+        .order_by(Evaluation.created_at.desc())
         .limit(MAX_ANALYTICS_ROWS)
     )
-    return list(db.scalars(statement))
+    rows = list(db.scalars(statement))
+    rows.reverse()
+    return rows
+
+
+def _band(confidence: float, auto_threshold: float, verify_threshold: float) -> str:
+    if confidence >= auto_threshold:
+        return "auto"
+    if confidence >= verify_threshold:
+        return "verify"
+    return "review"
 
 
 def confidence_histogram(
@@ -96,9 +108,13 @@ def confidence_histogram(
 
     width = 1.0 / n_bins
     buckets = [0] * n_bins
+    # Per-bin band tallies from each row's own confidence (as band_counts does),
+    # so a bin that straddles a threshold is labelled by what it actually holds.
+    bin_bands: list[Counter[str]] = [Counter() for _ in range(n_bins)]
     for confidence in confidences:
         index = min(int(max(0.0, min(1.0, confidence)) / width), n_bins - 1)
         buckets[index] += 1
+        bin_bands[index][_band(confidence, auto_threshold, verify_threshold)] += 1
 
     total = sum(buckets) or 1
     return [
@@ -108,11 +124,10 @@ def confidence_histogram(
             "count": count,
             "share": round(count / total, 6),
             "band": (
-                "auto"
-                if index * width >= auto_threshold
-                else "verify"
-                if index * width >= verify_threshold
-                else "review"
+                bin_bands[index].most_common(1)[0][0]
+                if bin_bands[index]
+                # An empty bin takes the band of its midpoint.
+                else _band((index + 0.5) * width, auto_threshold, verify_threshold)
             ),
         }
         for index, count in enumerate(buckets)
@@ -123,20 +138,17 @@ def band_counts(confidences: Iterable[float]) -> dict[str, int]:
     settings = get_settings()
     counts = {"auto": 0, "verify": 0, "review": 0}
     for confidence in confidences:
-        if confidence >= settings.auto_threshold:
-            counts["auto"] += 1
-        elif confidence >= settings.verify_threshold:
-            counts["verify"] += 1
-        else:
-            counts["review"] += 1
+        counts[_band(confidence, settings.auto_threshold, settings.verify_threshold)] += 1
     return counts
 
 
 def overview(db: Session, *, hours: int = DEFAULT_WINDOW_HOURS) -> dict[str, Any]:
     """Headline metrics for the dashboard header cards."""
     window = AnalyticsWindow.build(hours)
-    evaluations = _evaluations(db, window)
+    return _overview(window, _evaluations(db, window))
 
+
+def _overview(window: AnalyticsWindow, evaluations: list[Evaluation]) -> dict[str, Any]:
     if not evaluations:
         return {
             "window": window.to_dict(),
@@ -211,7 +223,10 @@ def timeseries(
 ) -> list[dict[str, Any]]:
     """Volume, mean confidence and escalation rate over time."""
     window = AnalyticsWindow.build(hours)
-    evaluations = _evaluations(db, window)
+    return _timeseries(_evaluations(db, window), bucket=bucket)
+
+
+def _timeseries(evaluations: list[Evaluation], *, bucket: str) -> list[dict[str, Any]]:
     if not evaluations:
         return []
 
@@ -250,8 +265,14 @@ def timeseries(
 def route_breakdown(db: Session, *, hours: int = DEFAULT_WINDOW_HOURS) -> dict[str, Any]:
     """Workflow run outcomes by route, joining in queue depth."""
     window = AnalyticsWindow.build(hours)
+    # Same MAX_ANALYTICS_ROWS guard rail as _evaluations, keeping the newest rows.
     runs = list(
-        db.scalars(select(WorkflowRun).where(WorkflowRun.created_at >= window.start))
+        db.scalars(
+            select(WorkflowRun)
+            .where(WorkflowRun.created_at >= window.start)
+            .order_by(WorkflowRun.created_at.desc())
+            .limit(MAX_ANALYTICS_ROWS)
+        )
     )
     by_route = Counter(run.route or "unknown" for run in runs)
     by_status = Counter(run.status for run in runs)
@@ -263,7 +284,12 @@ def route_breakdown(db: Session, *, hours: int = DEFAULT_WINDOW_HOURS) -> dict[s
                 action_status[f"{action.get('kind')}:{action.get('status')}"] += 1
 
     review_items = list(
-        db.scalars(select(ReviewItem).where(ReviewItem.created_at >= window.start))
+        db.scalars(
+            select(ReviewItem)
+            .where(ReviewItem.created_at >= window.start)
+            .order_by(ReviewItem.created_at.desc())
+            .limit(MAX_ANALYTICS_ROWS)
+        )
     )
     reviewed = [item for item in review_items if item.status in ("approved", "corrected")]
     corrections = [item for item in reviewed if item.status == "corrected"]
@@ -285,7 +311,11 @@ def route_breakdown(db: Session, *, hours: int = DEFAULT_WINDOW_HOURS) -> dict[s
 def calibration_monitor(db: Session, *, hours: int = DEFAULT_WINDOW_HOURS) -> dict[str, Any]:
     """ECE over time plus the current reliability diagram."""
     window = AnalyticsWindow.build(hours)
-    evaluations = [item for item in _evaluations(db, window) if item.label and item.confidence is not None]
+    return _calibration_monitor(window, _evaluations(db, window))
+
+
+def _calibration_monitor(window: AnalyticsWindow, rows: list[Evaluation]) -> dict[str, Any]:
+    evaluations = [item for item in rows if item.label and item.confidence is not None]
 
     if not evaluations:
         return {
@@ -361,17 +391,20 @@ def _interpret_calibration(
 
 
 def dashboard(db: Session, *, hours: int = DEFAULT_WINDOW_HOURS, bucket: str = "hour") -> dict[str, Any]:
-    """Everything the analytics page needs in one round trip."""
+    """Everything the analytics page needs in one HTTP round trip.
+
+    The window's evaluations are loaded once and shared by every panel.
+    """
     window = AnalyticsWindow.build(hours)
     evaluations = _evaluations(db, window)
     confidences = [item.confidence for item in evaluations if item.confidence is not None]
 
     return {
-        "overview": overview(db, hours=hours),
+        "overview": _overview(window, evaluations),
         "histogram": confidence_histogram(confidences),
-        "timeseries": timeseries(db, hours=hours, bucket=bucket),
+        "timeseries": _timeseries(evaluations, bucket=bucket),
         "routes": route_breakdown(db, hours=hours),
-        "calibration": calibration_monitor(db, hours=hours),
+        "calibration": _calibration_monitor(window, evaluations),
         "thresholds": {
             "auto": get_settings().auto_threshold,
             "verify": get_settings().verify_threshold,

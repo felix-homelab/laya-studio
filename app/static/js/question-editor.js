@@ -75,7 +75,8 @@
       if (to === 'choice') {
         const out = {};
         levels.forEach((level, index) => {
-          const label = sanitizeName(level) || `option_${index + 1}`;
+          // Numbered rather than merged: two levels that sanitize alike stay two labels.
+          const label = uniqueName(sanitizeName(level) || `option_${index + 1}`, Object.keys(out));
           out[label] = '';
         });
         return Object.keys(out).length >= 2 ? out : { option_1: '', option_2: '' };
@@ -242,10 +243,14 @@
       enhanceSelects(host);
     }
 
+    /** Keys are de-duplicated here too, exactly as ``renameAll`` would on blur:
+     *  a form submitted before the name field is left must not merge two cards. */
     function questions() {
       const out = {};
+      const taken = [];
       model.forEach((entry) => {
-        const name = sanitizeName(entry.name) || 'question';
+        const name = uniqueName(entry.name, taken);
+        taken.push(name);
         out[name] = { type: entry.type, instructions: entry.instructions, criteria: entry.criteria };
       });
       return out;
@@ -285,7 +290,14 @@
       if (clean === entry.name && !collides) return;
       entry.name = clean;
       renameAll();
-      render();
+      // Patch the name fields in place rather than re-rendering: this blur is
+      // often the mousedown on a card's up/down/remove button, and replacing
+      // the cards now would detach that button before its click fires.
+      cards.querySelectorAll('[data-index]').forEach((node) => {
+        const input = node.querySelector('[data-name]');
+        const current = model[Number(node.dataset.index)];
+        if (input && current && input.value !== current.name) input.value = current.name;
+      });
       emit();
     }, true);
 
@@ -321,10 +333,7 @@
       emit();
     });
 
-    footer.addEventListener('click', (event) => {
-      const node = event.target.closest('[data-add]');
-      if (!node) return;
-      const type = node.dataset.add;
+    function addQuestion(type) {
       model.push({
         name: uniqueName(type, model.map((entry) => entry.name)),
         type,
@@ -333,6 +342,11 @@
       });
       render();
       emit();
+    }
+
+    footer.addEventListener('click', (event) => {
+      const node = event.target.closest('[data-add]');
+      if (node) addQuestion(node.dataset.add);
     });
 
     render();
@@ -340,16 +354,7 @@
     return {
       questions,
       setQuestions(next) { model = fromObject(next); render(); },
-      addQuestion(type) {
-        model.push({
-          name: uniqueName(type, model.map((entry) => entry.name)),
-          type,
-          instructions: '',
-          criteria: meta(type).blanks(),
-        });
-        render();
-        emit();
-      },
+      addQuestion,
       count: () => model.length,
     };
   }

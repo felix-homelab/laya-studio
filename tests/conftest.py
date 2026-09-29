@@ -17,6 +17,7 @@ Two things to know:
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -76,8 +77,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Tear the container down once the whole session is done."""
+    """Tear the container and the scratch directory down once the session is done."""
     _PG.stop()
+    # Best effort: on Windows an open log handler can still hold a file in here.
+    shutil.rmtree(_TMP_ROOT, ignore_errors=True)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -182,7 +185,9 @@ def session(fresh_db):
 def triage_schema(client):
     """The email-triage built-in template, as the API returns it."""
     schemas = client.get("/api/schemas").json()
-    return next(item for item in schemas if item["key"] == "email-triage")
+    match = next((item for item in schemas if item["key"] == "email-triage"), None)
+    assert match is not None, "the built-in email-triage template was not seeded"
+    return match
 
 
 @pytest.fixture

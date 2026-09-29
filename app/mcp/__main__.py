@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from urllib.parse import urlsplit
 
 from ..config import get_settings
 from ..logging_conf import configure_logging
@@ -30,6 +31,9 @@ from .panel import DEFAULT_BASE_URL, Panel
 from .server import DEFAULT_PATH, build_server, standalone_app
 
 logger = logging.getLogger(__name__)
+
+#: Bind addresses that only this machine can reach.
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,11 +63,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     settings = get_settings()
     configure_logging(settings.log_level)
 
     base_url = (args.base_url or settings.mcp_base_url or DEFAULT_BASE_URL).rstrip("/")
+    parts = urlsplit(base_url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        parser.error(f"the panel URL must be http(s)://host[:port], got {base_url!r}")
     panel = Panel.for_remote(base_url, settings)
     server = build_server(settings, panel=panel)
 
@@ -81,11 +89,21 @@ def main(argv: list[str] | None = None) -> int:
         args.path,
         base_url,
     )
+    if not getattr(settings, "mcp_token", None) and args.host not in _LOOPBACK:
+        logger.warning(
+            "The MCP endpoint on %s:%d is unauthenticated. It can create, run and "
+            "delete the panel's data. Set LAYA_STUDIO_MCP_TOKEN to require a bearer "
+            "token.",
+            args.host,
+            args.port,
+        )
     uvicorn.run(
         standalone_app(server, settings, args.path),
         host=args.host,
         port=args.port,
-        log_level=settings.log_level.lower(),
+        # The root logger's level, already validated by configure_logging:
+        # LOG_LEVEL accepts names (WARN, FATAL) that uvicorn's own table does not.
+        log_level=logging.getLogger().getEffectiveLevel(),
     )
     return 0
 

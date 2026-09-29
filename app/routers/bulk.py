@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import get_db
-from ..models import BulkJob
+from ..models import BulkJob, BulkJobItem
 from ..schemas import BulkItemResponse, BulkJobDetail, BulkJobSummary
 from ..services import bulk as bulk_service
 from ..services import decision_schemas
@@ -41,7 +42,9 @@ async def upload(
     if schema is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No schema {schema_id}.")
 
-    content = await file.read()
+    # Read one byte past the limit, so an oversized upload is rejected without
+    # being pulled into memory whole.
+    content = await file.read(settings.max_upload_bytes + 1)
     if len(content) > settings.max_upload_bytes:
         raise HTTPException(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -49,7 +52,7 @@ async def upload(
             "(raise LAYA_STUDIO_MAX_UPLOAD_MB to allow larger files).",
         )
 
-    try:
+    def score() -> BulkJobDetail:
         dataset = bulk_service.parse_dataset(content, file.filename or "")
         job = bulk_service.create_job(
             db,
@@ -63,11 +66,15 @@ async def upload(
         )
         bulk_service.attach_rows(db, job, dataset)
         bulk_service.run_job(db, job)
+        db.refresh(job)
+        return BulkJobDetail.model_validate(job)
+
+    # The handler is async only to stream the upload; scoring every row is
+    # synchronous DB and model work, so it runs off the event loop.
+    try:
+        return await run_in_threadpool(score)
     except bulk_service.BulkError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-
-    db.refresh(job)
-    return BulkJobDetail.model_validate(job)
 
 
 @router.get("/jobs", response_model=list[BulkJobSummary])
@@ -87,11 +94,17 @@ def get_job(
     db: Session = Depends(get_db),
 ) -> BulkJobDetail:
     job = _get_job(db, job_id)
-    detail = BulkJobDetail.model_validate(job)
+    # Validate as a summary: validating the detail model would read `job.items`
+    # and load every row of the job, whatever `item_limit` says.
+    detail = BulkJobDetail(**BulkJobSummary.model_validate(job).model_dump())
     if include_items:
-        detail.items = [
-            BulkItemResponse.model_validate(item) for item in job.items[:item_limit]
-        ]
+        rows = db.scalars(
+            select(BulkJobItem)
+            .where(BulkJobItem.job_id == job_id)
+            .order_by(BulkJobItem.row_index)
+            .limit(item_limit)
+        )
+        detail.items = [BulkItemResponse.model_validate(row) for row in rows]
     return detail
 
 
@@ -102,8 +115,6 @@ def list_items(
     limit: int = Query(default=100, ge=1, le=2000),
     db: Session = Depends(get_db),
 ) -> list[BulkItemResponse]:
-    from ..models import BulkJobItem
-
     _get_job(db, job_id)
     rows = db.scalars(
         select(BulkJobItem)

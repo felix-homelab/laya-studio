@@ -6,7 +6,7 @@
 
   const button = document.getElementById('refit-btn');
   const output = document.getElementById('refit-output');
-  if (!button) return;
+  if (!button || !output) return;
 
   button.addEventListener('click', async () => {
     button.disabled = true;
@@ -26,7 +26,7 @@
                    <span class="font-mono text-slate-300">${escapeHtml(s.question || '(schema-wide)')}</span>
                    <span class="text-slate-500">slope <span class="font-mono text-slate-300">${num(s.slope, 4)}</span></span>
                    <span class="text-slate-500">intercept <span class="font-mono text-slate-300">${num(s.intercept, 4)}</span></span>
-                   <span class="text-slate-500">n = ${s.n_samples}</span>
+                   <span class="text-slate-500">n = ${escapeHtml(s.n_samples)}</span>
                    ${s.ece != null ? `<span class="text-slate-500">ECE = <span class="font-mono text-slate-300">${num(s.ece, 4)}</span></span>` : ''}
                  </div>`).join('')}
              </div>

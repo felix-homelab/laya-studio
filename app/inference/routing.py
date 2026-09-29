@@ -55,7 +55,15 @@ _LETTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)
 
 @dataclass(frozen=True, slots=True)
 class ScriptProfile:
-    """Dominant script of a piece of text plus how dominant it is."""
+    """Dominant script of a piece of text plus how dominant it is.
+
+    ``script`` is usually a key of :data:`SCRIPT_RANGES`, with three synthetic
+    values: ``"cjk"`` (Han, kana and Hangul folded together for dominance),
+    ``"other"`` (letters from a script with no entry in :data:`SCRIPT_RANGES`) and
+    ``"unknown"`` (no letters at all). ``counts`` always keeps the individual
+    recognised scripts, so ``counts[script]`` is not defined for the synthetic
+    values.
+    """
 
     script: str
     fraction: float
@@ -100,6 +108,12 @@ def profile_text(text: str) -> ScriptProfile:
         grouped.pop(name, None)
     if grouped_cjk:
         grouped["cjk"] = grouped_cjk
+    # Letters from a script SCRIPT_RANGES does not list (Syriac, Thaana, ...) still
+    # compete for dominance, so they cannot leave a known script looking pure — and
+    # a text made only of them is not an empty tally.
+    unrecognised = total - sum(counts.values())
+    if unrecognised:
+        grouped["other"] = unrecognised
 
     dominant = max(grouped, key=grouped.__getitem__)
     return ScriptProfile(
@@ -113,6 +127,22 @@ def profile_text(text: str) -> ScriptProfile:
 def detect_dominant_script(text: str) -> str:
     """Convenience wrapper returning just the script name."""
     return profile_text(text).script
+
+
+def _routing_text(value: Any) -> str:
+    """The text a state's script is judged on: its leaf values only.
+
+    Keys, ``None`` and booleans are left out — rendered as text they are Latin
+    words ("None", "True", nested field names) that would tilt a non-Latin state
+    toward the English checkpoint.
+    """
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, dict):
+        return " ".join(_routing_text(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return " ".join(_routing_text(item) for item in value)
+    return str(value)
 
 
 def routing_decision(state: dict[str, Any] | str, force_model: str | None = None) -> dict[str, Any]:
@@ -131,12 +161,7 @@ def routing_decision(state: dict[str, Any] | str, force_model: str | None = None
             "forced": True,
         }
 
-    if isinstance(state, str):
-        text = state
-    else:
-        text = " ".join(str(value) for value in state.values())
-
-    profile = profile_text(text)
+    profile = profile_text(_routing_text(state))
 
     if profile.script == "unknown":
         return {

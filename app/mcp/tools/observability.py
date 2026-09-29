@@ -13,6 +13,7 @@ that lies.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 from mcp.server.mcpserver import MCPServer
 
@@ -112,7 +113,7 @@ def register(server: MCPServer, panel: Panel) -> None:
         characters (the tail is kept) and flagged with `traceback_truncated`.
         """
         return await panel.get(
-            f"/api/observability/errors/{fingerprint}",
+            f"/api/observability/errors/{quote(fingerprint, safe='')}",
             tool="errors_detail",
             params={"limit": limit},
         )

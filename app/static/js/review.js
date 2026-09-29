@@ -1,10 +1,20 @@
 /* Review queue: inspect, claim, approve, correct, reject. */
 
 (() => {
-  const { api, toast, escapeHtml, pct, num } = window.LayaStudio;
+  const { api, toast, escapeHtml, pct } = window.LayaStudio;
 
   const list = document.getElementById('review-list');
   const detail = document.getElementById('review-detail');
+
+  /** Status chip colours, kept identical to the server-rendered list in review.html. */
+  function statusTone(status) {
+    return {
+      approved: 'bg-emerald-500/15 text-emerald-300',
+      corrected: 'bg-amber-500/15 text-amber-300',
+      in_review: 'bg-sky-500/15 text-sky-300',
+      rejected: 'bg-rose-500/15 text-rose-300',
+    }[status] || 'bg-slate-700/40 text-slate-300';
+  }
 
   async function open(itemId) {
     try {
@@ -44,11 +54,7 @@
             ${item.assignee ? `· assigned to ${escapeHtml(item.assignee)}` : ''}
           </p>
         </div>
-        <span class="rounded-full px-2.5 py-1 text-[11px] font-medium
-          ${item.status === 'approved' ? 'bg-emerald-500/15 text-emerald-300'
-            : item.status === 'corrected' ? 'bg-amber-500/15 text-amber-300'
-            : item.status === 'rejected' ? 'bg-rose-500/15 text-rose-300'
-            : 'bg-slate-700/40 text-slate-300'}">${escapeHtml(item.status)}</span>
+        <span class="rounded-full px-2.5 py-1 text-[11px] font-medium ${statusTone(item.status)}">${escapeHtml(item.status)}</span>
       </div>
 
       <div class="mt-4 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
@@ -186,11 +192,7 @@
                 <span class="text-slate-600">${escapeHtml(item.reason)}</span>
               </span>
             </span>
-            <span class="shrink-0 rounded-full px-2 py-0.5 text-[11px]
-              ${item.status === 'approved' ? 'bg-emerald-500/15 text-emerald-300'
-                : item.status === 'corrected' ? 'bg-amber-500/15 text-amber-300'
-                : item.status === 'rejected' ? 'bg-rose-500/15 text-rose-300'
-                : 'bg-slate-700/40 text-slate-300'}">${escapeHtml(item.status)}</span>
+            <span class="shrink-0 rounded-full px-2 py-0.5 text-[11px] ${statusTone(item.status)}">${escapeHtml(item.status)}</span>
           </button>`).join('')
         : '<div class="p-5"><p class="rounded-xl border border-dashed border-slate-800 px-4 py-10 text-center text-xs text-slate-500">Queue is empty.</p></div>';
 

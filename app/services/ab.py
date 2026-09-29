@@ -42,10 +42,12 @@ def create_ab_test(
     revision_a: SchemaRevision,
     revision_b: SchemaRevision,
     dataset: list[dict[str, Any]],
-    model: str | None = None,
     commit: bool = True,
 ) -> ABTest:
-    """Register an A/B test over two revisions of one schema."""
+    """Register an A/B test over two revisions of one schema.
+
+    The model is not part of the test record; pass it to :func:`run_ab_test`.
+    """
     if not dataset:
         raise ABError("An A/B test needs at least one row of test input.")
     if len(dataset) > MAX_AB_ROWS:
@@ -84,6 +86,7 @@ def run_ab_test(db: Session, test: ABTest, *, model: str | None = None, commit: 
     question_set_b = dict(revision_b.definition.get("questions", {}))
 
     items: list[ABTestItem] = []
+    skipped = 0
     for index, row in enumerate(test.dataset):
         state = row.get("state") if isinstance(row, dict) else None
         if state is None:
@@ -91,28 +94,31 @@ def run_ab_test(db: Session, test: ABTest, *, model: str | None = None, commit: 
         label = row.get("label") if isinstance(row, dict) else None
 
         try:
-            outcome_a = evaluation_service.run_evaluation(
-                db,
-                state=state,
-                questions=question_set_a,
-                schema=None,
-                model=model,
-                source="ab_test",
-                label=label,
-                label_source="dataset" if label else None,
-                commit=False,
-            )
-            outcome_b = evaluation_service.run_evaluation(
-                db,
-                state=state,
-                questions=question_set_b,
-                schema=None,
-                model=model,
-                source="ab_test",
-                label=label,
-                label_source="dataset" if label else None,
-                commit=False,
-            )
+            # A SAVEPOINT per row: a row that fails mid-flush is rolled back on its
+            # own instead of leaving the session unusable for the rows after it.
+            with db.begin_nested():
+                outcome_a = evaluation_service.run_evaluation(
+                    db,
+                    state=state,
+                    questions=question_set_a,
+                    schema=None,
+                    model=model,
+                    source="ab_test",
+                    label=label,
+                    label_source="dataset" if label else None,
+                    commit=False,
+                )
+                outcome_b = evaluation_service.run_evaluation(
+                    db,
+                    state=state,
+                    questions=question_set_b,
+                    schema=None,
+                    model=model,
+                    source="ab_test",
+                    label=label,
+                    label_source="dataset" if label else None,
+                    commit=False,
+                )
         except (EngineNotReady, EngineUnavailable) as exc:
             test.status = "failed"
             test.error = str(exc)
@@ -123,6 +129,7 @@ def run_ab_test(db: Session, test: ABTest, *, model: str | None = None, commit: 
             raise
         except Exception as exc:  # noqa: BLE001 - skip a bad row, keep the test going
             logger.warning("A/B test %s row %s failed: %s", test.id, index, exc)
+            skipped += 1
             continue
 
         choice_a = outcome_a.evaluation.top_choice
@@ -153,11 +160,11 @@ def run_ab_test(db: Session, test: ABTest, *, model: str | None = None, commit: 
                 },
             )
         )
+        # No flush per row: the next row's evaluation (or the final commit) flushes it.
         db.add(items[-1])
-        db.flush()
 
     test.status = "succeeded" if items else "failed"
-    test.summary = summarize_ab(items, revision_a, revision_b)
+    test.summary = summarize_ab(items, revision_a, revision_b, skipped=skipped)
     test.finished_at = datetime.now(timezone.utc)
 
     if commit:
@@ -170,24 +177,30 @@ def summarize_ab(
     items: list[ABTestItem],
     revision_a: SchemaRevision | None = None,
     revision_b: SchemaRevision | None = None,
+    *,
+    skipped: int = 0,
 ) -> dict[str, Any]:
-    """Metrics that distinguish a real improvement from probability noise."""
+    """Metrics that distinguish a real improvement from probability noise.
+
+    ``skipped`` counts dataset rows that failed to evaluate and are not in ``items``.
+    """
     if not items:
-        return {"total": 0, "note": "No rows were evaluated."}
+        return {"total": 0, "skipped": skipped, "note": "No rows were evaluated."}
 
     total = len(items)
     flips = [item for item in items if item.flipped]
 
-    confidence_a = [item.confidence_a for item in items if item.confidence_a is not None]
-    confidence_b = [item.confidence_b for item in items if item.confidence_b is not None]
-    deltas = [
-        item.confidence_b - item.confidence_a
-        for item in items
-        if item.confidence_a is not None and item.confidence_b is not None
+    # Means and deltas over the same paired rows, so mean_b - mean_a == mean delta.
+    paired = [
+        item for item in items if item.confidence_a is not None and item.confidence_b is not None
     ]
+    confidence_a = [item.confidence_a for item in paired]
+    confidence_b = [item.confidence_b for item in paired]
+    deltas = [item.confidence_b - item.confidence_a for item in paired]
 
     summary: dict[str, Any] = {
         "total": total,
+        "skipped": skipped,
         "flip_count": len(flips),
         "flip_rate": len(flips) / total,
         "agreement": 1.0 - (len(flips) / total),

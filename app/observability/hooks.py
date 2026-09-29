@@ -32,12 +32,22 @@ logger = logging.getLogger(__name__)
 
 
 def _record(store: LogStore, exc: BaseException, **context: Any) -> None:
-    payload = exception_record(exc, context=context or None)
-    store.write(payload)
+    # Guarded, so every hook still chains to the previous one: a failure to record
+    # (an exception whose __str__ raises, say) must not swallow the original report.
+    try:
+        payload = exception_record(exc, context=context or None)
+        store.write(payload)
+    except Exception:  # noqa: BLE001 - recording must never mask the original failure
+        logger.warning("Could not record %s in the log store", type(exc).__name__, exc_info=True)
 
 
 def install_exception_hooks(store: LogStore) -> None:
-    """Install the interpreter- and thread-level hooks. Idempotent enough to re-run."""
+    """Install the interpreter- and thread-level hooks.
+
+    Not idempotent on its own: each call wraps whatever hook is current, so a
+    second call records every crash twice. :func:`app.observability.configure`
+    installs them once per process.
+    """
     previous_excepthook = sys.excepthook
 
     def excepthook(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
@@ -81,16 +91,18 @@ def install_asyncio_hook(loop: asyncio.AbstractEventLoop, store: LogStore) -> No
             # A non-exception context (a cancelled task, a bad callback) is still
             # worth a line: it is how "the engine loader quietly never finished"
             # shows up.
-            store.write(
-                exception_record(
-                    RuntimeError(context.get("message") or "asyncio error"),
-                    context={"source": "asyncio", "task": str(context.get("task") or "") or None},
-                )
+            _record(
+                store,
+                RuntimeError(context.get("message") or "asyncio error"),
+                source="asyncio",
+                task=str(context.get("task") or "") or None,
             )
         if previous is not None:
             previous(_loop, context)
         else:  # pragma: no cover - the default handler prints to stderr
             logger.error("asyncio error: %s", context.get("message"))
+
+    loop.set_exception_handler(handler)
 
 
 def install_warning_capture() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..db import get_db
@@ -50,6 +51,12 @@ def create_schema(payload: SchemaCreate, db: Session = Depends(get_db)) -> Schem
         )
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except IntegrityError as exc:
+        # A derived key is made unique; a caller-supplied one is taken as given.
+        db.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"A schema with key {payload.key!r} already exists."
+        ) from exc
     return SchemaDetail.model_validate(schema)
 
 
@@ -137,5 +144,5 @@ def lint_schema(schema_id: int, db: Session = Depends(get_db)) -> LintResponse:
     findings = decision_schemas.lint(schema.questions)
     return LintResponse(
         findings=[LintFinding(**item) for item in findings],
-        ok=decision_schemas.lint_ok(schema.questions),
+        ok=not any(item["severity"] == "error" for item in findings),
     )

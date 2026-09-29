@@ -299,7 +299,7 @@ python -m app.cli info
   "app": "Laya Studio",
   "version": "0.1.0",
   "environment": "development",
-  "database_url": "postgresql+psycopg://laya:laya@localhost:5432/laya_studio",
+  "database_url": "postgresql+psycopg://laya:***@localhost:5432/laya_studio",
   "engine": {
     "name": "laya", "available": true, "device": "mps",
     "preload": true, "max_loaded": 2,

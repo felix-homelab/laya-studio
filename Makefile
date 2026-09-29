@@ -53,12 +53,17 @@ predict: ## Score one state end to end, as a smoke test
 
 # --- observability & MCP -----------------------------------------------------
 
+# Both send LAYA_STUDIO_OBSERVABILITY_TOKEN from the environment (export it; the
+# Makefile does not read .env). Unset, curl sends no header, which is what a panel
+# without a token expects.
 logs: ## Print the last records from the running panel's log store (LINES=n)
-	@curl -fsS "http://$(HOST):$(PORT)/api/observability/logs/tail?lines=$${LINES:-20}&include_traceback=true" \
+	@curl -fsS -H "X-Observability-Token: $${LAYA_STUDIO_OBSERVABILITY_TOKEN:-}" \
+		"http://$(HOST):$(PORT)/api/observability/logs/tail?lines=$${LINES:-20}&include_traceback=true" \
 		| $(PYTHON) -m json.tool
 
 errors: ## List distinct exceptions seen by the running panel, grouped by raise site
-	@curl -fsS "http://$(HOST):$(PORT)/api/observability/errors" | $(PYTHON) -m json.tool
+	@curl -fsS -H "X-Observability-Token: $${LAYA_STUDIO_OBSERVABILITY_TOKEN:-}" \
+		"http://$(HOST):$(PORT)/api/observability/errors" | $(PYTHON) -m json.tool
 
 mcp: ## Serve the MCP tools over stdio, against the running panel (for a desktop client)
 	$(PYTHON) -m app.mcp --transport stdio
@@ -80,18 +85,22 @@ db-status: ## Show which migrations have been applied
 db-studio: ## Browse the database with Prisma Studio
 	npx prisma studio
 
-db-diff: ## Print the SQL for schema.prisma changes without applying them
-	npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "$${LAYA_STUDIO_SHADOW_DATABASE_URL:-$$LAYA_STUDIO_DATABASE_URL}"
+# Prisma resets the shadow database and replays every migration into it, so it
+# must be a throwaway database — never LAYA_STUDIO_DATABASE_URL.
+db-diff: ## Print the SQL for schema.prisma changes without applying them (needs LAYA_STUDIO_SHADOW_DATABASE_URL)
+	npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "$${LAYA_STUDIO_SHADOW_DATABASE_URL:?set LAYA_STUDIO_SHADOW_DATABASE_URL to a throwaway database}"
 
 db-up: ## Start just the PostgreSQL service
 	$(COMPOSE) up -d db
 
-db-reset: ## Drop and re-migrate the database (destructive)
-	$(PYTHON) -m app.cli purge --yes
+# Both let `app.cli purge` ask first — it names the database it is about to empty.
+# Scripts that really mean it can run `python -m app.cli purge --yes` directly.
+db-reset: ## Drop and re-migrate the database (destructive; asks first)
+	$(PYTHON) -m app.cli purge
 	npx prisma migrate deploy
 
-reset: ## Drop every table, re-apply the migrations, re-seed the templates (destructive)
-	$(PYTHON) -m app.cli purge --yes
+reset: ## Drop every table, re-apply the migrations, re-seed the templates (destructive; asks first)
+	$(PYTHON) -m app.cli purge
 	npx prisma migrate deploy
 	$(PYTHON) -m app.cli db-check
 
@@ -122,9 +131,12 @@ check: lint test ## Lint then test
 docker-build: ## Build the panel image
 	$(COMPOSE) build app
 
-docker-up: ## Start the panel on http://localhost:8000
+# The host port is compose's LAYA_STUDIO_PORT (default 8000), not PORT, so ask
+# compose which one it published.
+docker-up: ## Start the panel on http://localhost:8000 (host port: LAYA_STUDIO_PORT)
 	$(COMPOSE) up --build -d
-	@echo "Panel: http://localhost:$(PORT)  ·  API docs: http://localhost:$(PORT)/api/docs"
+	@port=$$($(COMPOSE) port app 8000 | head -n 1 | sed 's/.*://'); \
+		echo "Panel: http://localhost:$$port  ·  API docs: http://localhost:$$port/api/docs"
 
 docker-migrate: ## Apply migrations against the running compose database
 	$(COMPOSE) run --rm migrate
@@ -140,7 +152,7 @@ docker-warm: ## Start with the Hugging Face cache mounted, so weights are not re
 docs: ## List the documentation
 	@ls -1 docs/
 
-clean: ## Remove caches and upload scratch (not the database — it is on a server)
+clean: ## Remove caches and upload scratch (not the logs, not the database)
 	rm -rf .pytest_cache .ruff_cache
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
-	rm -rf data/*
+	rm -rf data/uploads/*

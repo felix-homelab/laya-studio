@@ -75,9 +75,15 @@ def tail_logs(
     include_traceback: bool = False,
 ) -> dict:
     """The most recent records, whatever they are — the first thing to read."""
-    store = get_store()
-    records = store.tail(lines, include_traceback=include_traceback)
-    return {"records": records, "count": len(records)}
+    # store.query rather than store.tail, so the envelope keeps `scanned` and
+    # `truncated` like every other endpoint here.
+    result = get_store().query(limit=lines, order="newest", include_traceback=include_traceback)
+    return {
+        "records": result["records"],
+        "count": result["count"],
+        "scanned": result["scanned"],
+        "truncated": result["truncated"],
+    }
 
 
 @router.get("/errors")
@@ -138,7 +144,4 @@ def request_history(
 @router.get("/stats")
 def log_stats() -> dict:
     """What is on disk, how far back it goes, and where the files are."""
-    store = get_store()
-    payload = store.stats()
-    payload["log_dir"] = str(store.directory)
-    return payload
+    return get_store().stats()

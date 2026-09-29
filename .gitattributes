@@ -1,2 +1,22 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Files that must keep LF in the working tree even on a Windows checkout.
+# Shell scripts break with CRLF (`/bin/sh^M: bad interpreter`), and Prisma
+# checksums each migration.sql, so a CRLF copy looks like an edited migration.
+*.sh text eol=lf
+*.bash text eol=lf
+*.sql text eol=lf
+
+# Never rewrite line endings in binary assets, whatever the heuristic guesses.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.woff binary
+*.woff2 binary

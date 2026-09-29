@@ -82,8 +82,9 @@
     els.name.value = '';
     els.description.value = '';
     els.trigger.value = 'api';
-    els.auto.value = '0.90';
-    els.verify.value = '0.60';
+    // The page renders the configured ladder as the inputs' defaults.
+    els.auto.value = els.auto.defaultValue || '0.90';
+    els.verify.value = els.verify.defaultValue || '0.60';
     blocks.setHints(hints());
     blocks.setSteps(DEFAULT_STEPS);
     updateSummary();
@@ -126,9 +127,27 @@
   }
 
   function updateIngestUrl(key) {
-    const chosen = key || (runSelect.options[runSelect.selectedIndex] && runSelect.options[runSelect.selectedIndex].textContent);
-    const slug = key || (chosen || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    document.getElementById('ingest-url').textContent = `${window.location.origin}/api/ingest/${slug}`;
+    document.getElementById('ingest-url').textContent = `${window.location.origin}/api/ingest/${key || ''}`;
+  }
+
+  /** Show the ingest URL of the workflow picked in the run box.
+   *
+   * The URL is keyed by ``workflow.key``, which only the API knows: the options
+   * carry the display name, and a slug of that need not match the real key. */
+  async function refreshIngestUrl() {
+    const workflowId = runSelect.value;
+    if (!workflowId) { updateIngestUrl(); return; }
+    try {
+      const workflow = await api(`/api/workflows/${workflowId}`);
+      if (runSelect.value === workflowId) updateIngestUrl(workflow.key);
+    } catch { /* non-fatal */ }
+  }
+
+  /** Badge colours for one action-log entry. */
+  function actionTone(status) {
+    if (status === 'ok') return 'bg-emerald-500/15 text-emerald-300';
+    if (status === 'skipped') return 'bg-slate-700/40 text-slate-400';
+    return 'bg-rose-500/15 text-rose-300';
   }
 
   function renderRun(payload, evaluation) {
@@ -156,7 +175,7 @@
         <div class="mt-2 space-y-1.5">
           ${payload.actions.map((a) => `
             <div class="flex items-start gap-2 text-[11px]">
-              <span class="rounded px-1.5 py-0.5 font-mono ${a.status === 'ok' ? 'bg-emerald-500/15 text-emerald-300' : a.status === 'skipped' ? 'bg-slate-700/40 text-slate-400' : 'bg-rose-500/15 text-rose-300'}">${escapeHtml(a.kind)}</span>
+              <span class="rounded px-1.5 py-0.5 font-mono ${actionTone(a.status)}">${escapeHtml(a.kind)}</span>
               <span class="text-slate-400">${escapeHtml(a.detail || a.error || '')}</span>
             </div>`).join('')}
         </div>
@@ -187,7 +206,7 @@
             <p class="text-xs font-semibold text-slate-200">Run #${run.id}</p>
             <p class="mt-0.5 text-[11px] text-slate-500">
               ${escapeHtml(run.status)} · route <span class="font-mono">${escapeHtml(run.route || '—')}</span>
-              · ${pct(run.confidence)} · ${num(run.actions.length, 0)} action(s)
+              · ${pct(run.confidence)} · ${num(actions.length, 0)} action(s)
             </p>
           </div>
           ${run.evaluation_id ? `<span class="font-mono text-[11px] text-slate-500">evaluation #${run.evaluation_id}</span>` : ''}
@@ -196,7 +215,7 @@
         <div class="mt-3 space-y-1.5">
           ${actions.map((a) => `
             <div class="flex items-start gap-2 rounded-lg bg-slate-900/60 px-3 py-2 text-[11px]">
-              <span class="rounded px-1.5 py-0.5 font-mono ${a.status === 'ok' ? 'bg-emerald-500/15 text-emerald-300' : a.status === 'skipped' ? 'bg-slate-700/40 text-slate-400' : 'bg-rose-500/15 text-rose-300'}">
+              <span class="rounded px-1.5 py-0.5 font-mono ${actionTone(a.status)}">
                 ${escapeHtml(a.kind)}
               </span>
               <span class="min-w-0 flex-1 text-slate-400">${escapeHtml(a.detail || a.error || '')}</span>
@@ -206,6 +225,13 @@
           <a href="/review?run=${run.id}" class="rounded-lg border border-slate-800 px-2.5 py-1 text-[11px] text-slate-400 hover:text-slate-200">Open in review queue</a>
         </div>
       </div>`;
+  }
+
+  /** Wire the run rows: the server-rendered ones at startup, and every refresh. */
+  function wireRunRows() {
+    runsList.querySelectorAll('[data-run-id]').forEach((node) => {
+      node.addEventListener('click', () => openRun(Number(node.dataset.runId)));
+    });
   }
 
   async function refreshRuns() {
@@ -224,9 +250,7 @@
           </button>`).join('')
         : '<p class="px-5 py-6 text-center text-xs text-slate-500">No runs yet.</p>';
 
-      runsList.querySelectorAll('[data-run-id]').forEach((node) => {
-        node.addEventListener('click', () => openRun(Number(node.dataset.runId)));
-      });
+      wireRunRows();
     } catch (error) {
       toast(error.message, 'error');
     }
@@ -278,7 +302,9 @@
     });
     list.querySelectorAll('[data-run-workflow]').forEach((node) => {
       node.addEventListener('click', () => {
+        // A programmatic value set fires no ``change``, so refresh the URL here.
         runSelect.value = node.dataset.runWorkflow;
+        refreshIngestUrl();
         state.elements.textarea.focus();
       });
     });
@@ -394,21 +420,12 @@
   document.getElementById('copy-ingest').addEventListener('click', () => {
     copy(document.getElementById('ingest-url').textContent);
   });
-  runSelect.addEventListener('change', async (event) => {
-    const workflowId = event.target.value;
-    if (!workflowId) return;
-    try {
-      const workflow = await api(`/api/workflows/${workflowId}`);
-      updateIngestUrl(workflow.key);
-    } catch { /* non-fatal */ }
-  });
+  runSelect.addEventListener('change', refreshIngestUrl);
   document.getElementById('wf-reset').addEventListener('click', newWorkflow);
 
-  runsList.querySelectorAll('[data-run-id]').forEach((node) => {
-    node.addEventListener('click', () => openRun(Number(node.dataset.runId)));
-  });
+  wireRunRows();
   wireWorkflowRows();
 
   newWorkflow();
-  updateIngestUrl();
+  refreshIngestUrl();
 })();

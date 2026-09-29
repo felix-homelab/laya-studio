@@ -32,9 +32,10 @@ services:
     volumes:
       - laya-pgdata:/var/lib/postgresql/data
     ports:
-      # Exposed so `npx prisma migrate dev` and `prisma studio` work from the host.
-      # Remove this mapping if the database should stay on the compose network only.
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Exposed so `npx prisma migrate dev` and `prisma studio` work from the host —
+      # on loopback only, since the default credentials are laya/laya. Remove this
+      # mapping if the database should stay on the compose network only.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-laya} -d ${POSTGRES_DB:-laya_studio}"]
       interval: 5s
@@ -119,6 +120,8 @@ services:
       # Upload scratch and the JSONL log store, bind-mounted rather than a named
       # volume so the logs are readable from the host — `grep data/logs/*.jsonl`
       # works without docker exec, which is the point of writing them at all.
+      # The container runs as uid 10001; on a Linux host chown both host
+      # directories to it first (see the Dockerfile and docs/deployment.md).
       - ./data:/app/data
       # Weights cache. Without this every `--build` re-downloads ~800 MB.
       - ${HF_CACHE:-./models}:/models

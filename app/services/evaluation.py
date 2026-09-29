@@ -11,7 +11,6 @@ consistent no matter which door the state came through.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -30,8 +29,6 @@ from ..inference import (
 from ..inference.calibration import apply_platt_to_distribution
 from ..models import EvalSchema, Evaluation
 from . import calibration as calibration_service
-
-logger = logging.getLogger(__name__)
 
 
 class InvalidQuestions(ValueError):
@@ -73,8 +70,12 @@ def normalize_state(state: Any) -> dict[str, Any]:
 
 
 def resolve_questions(schema: EvalSchema | None, questions: Any) -> dict[str, dict[str, Any]]:
-    """Work out which question bundle to run, preferring an explicit override."""
-    if questions:
+    """Work out which question bundle to run, preferring an explicit override.
+
+    Only ``None`` means "no override": an explicit empty bundle is linted (and
+    rejected) rather than silently replaced by the schema's questions.
+    """
+    if questions is not None:
         if not isinstance(questions, dict):
             raise InvalidQuestions("`questions` must be an object keyed by question name.")
         candidate = {str(name): dict(definition) for name, definition in questions.items()}
@@ -138,9 +139,13 @@ def _calibrate_entry(
         distribution = {item["label"]: item["probability"] for item in breakdown}
         rescaled = apply_platt_to_distribution(distribution, fit)
         ranked = sorted(rescaled.items(), key=lambda kv: kv[1], reverse=True)
+        # Carry `raw_label` (Laya's own key, e.g. a score index) through the rescale
+        # so the stored shape matches the uncalibrated path.
+        raw_labels = {item["label"]: item.get("raw_label", item["label"]) for item in breakdown}
         entry["breakdown"] = [
             {
                 "label": label,
+                "raw_label": raw_labels.get(label, label),
                 "probability": round(probability, 6),
                 "rank": rank + 1,
                 "is_top": rank == 0,
@@ -211,17 +216,19 @@ def run_evaluation(
     calibration_meta: dict[str, Any] = {}
 
     if apply_calibration and settings.calibration_enabled:
+        primary_active: calibration_service.ActiveCalibration | None = None
         for entry in question_results:
             active = calibration_service.get_active_calibration(
                 db,
                 schema_id=schema.id if schema is not None else None,
                 question=entry["question"],
-                primitive=entry["type"],
             )
             _calibrate_entry(entry, active)
             if entry["question"] == primary:
                 calibration_meta = active.to_dict()
-        if primary and calibration_meta.get("source") in ("fitted", "cached"):
+                primary_active = active
+        # Only warn when a map was actually applied; a cached identity is a no-op.
+        if primary_active is not None and not primary_active.is_identity:
             warnings.append(
                 f"A calibration map was applied to '{primary}' over "
                 f"{calibration_meta.get('n_samples', 0)} labelled rows: "

@@ -16,6 +16,7 @@ Two consequences worth knowing:
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -44,6 +45,8 @@ _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
 _session_factory_engine: Engine | None = None
 _engine_url: str | None = None
+#: Guards (re)building the engine and session factory; reads stay lock-free.
+_lock = threading.Lock()
 
 
 def normalize_database_url(url: str) -> str:
@@ -82,49 +85,63 @@ def get_engine() -> Engine:
     """Return the process-wide :class:`~sqlalchemy.engine.Engine`."""
     global _engine, _engine_url
     url = normalize_database_url(get_settings().database_url)
-    if _engine is not None and _engine_url == url:
+    # Lock-free fast path. `_engine_url` is written after `_engine`, so reading it
+    # first never pairs a matching URL with a stale engine.
+    if _engine_url == url and (engine := _engine) is not None:
+        return engine
+
+    # Sync endpoints run on a thread pool, so the first requests can race here.
+    # Re-check under the lock so only one engine is ever built (and none leaks).
+    with _lock:
+        if _engine is not None and _engine_url == url:
+            return _engine
+
+        if _engine is not None:
+            _engine.dispose()
+
+        _engine = create_engine(
+            url,
+            future=True,
+            pool_pre_ping=True,
+            # FastAPI runs sync endpoints on a thread pool, so connections move between
+            # threads. SQLAlchemy's pool is thread-safe; this only bounds how long a
+            # pool checkout waits when every connection is busy.
+            pool_timeout=30,
+        )
+        _engine_url = url
         return _engine
-
-    if _engine is not None:
-        _engine.dispose()
-
-    _engine = create_engine(
-        url,
-        future=True,
-        pool_pre_ping=True,
-        # FastAPI runs sync endpoints on a thread pool, so connections move between
-        # threads. SQLAlchemy's pool is thread-safe; this only bounds how long a
-        # pool checkout waits when every connection is busy.
-        pool_timeout=30,
-    )
-    _engine_url = url
-    return _engine
 
 
 def get_session_factory() -> sessionmaker[Session]:
     global _session_factory, _session_factory_engine
     engine = get_engine()
-    if _session_factory is None or _session_factory_engine is not engine:
-        _session_factory = sessionmaker(
-            bind=engine,
-            autoflush=False,
-            autocommit=False,
-            expire_on_commit=False,
-            future=True,
-        )
-        _session_factory_engine = engine
-    return _session_factory
+    factory = _session_factory
+    if factory is not None and factory.kw.get("bind") is engine:
+        return factory
+
+    with _lock:
+        if _session_factory is None or _session_factory_engine is not engine:
+            _session_factory = sessionmaker(
+                bind=engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+                future=True,
+            )
+            _session_factory_engine = engine
+        return _session_factory
 
 
 def reset_engine() -> None:
     """Dispose and forget the current engine."""
     global _engine, _session_factory, _session_factory_engine, _engine_url
-    if _engine is not None:
-        _engine.dispose()
-    _engine = None
-    _session_factory = None
-    _session_factory_engine = None
-    _engine_url = None
+    with _lock:
+        if _engine is not None:
+            _engine.dispose()
+        _engine = None
+        _session_factory = None
+        _session_factory_engine = None
+        _engine_url = None
 
 
 def expected_tables() -> set[str]:
@@ -164,6 +181,9 @@ def ping(engine: Engine | None = None) -> bool:
             connection.execute(text("SELECT 1"))
         return True
     except Exception:  # noqa: BLE001 - callers report the failure themselves
+        # ...but only as "unreachable"; keep the actual cause (auth, DNS, unknown
+        # database) recoverable for whoever turns on debug logging.
+        logger.debug("Database ping failed", exc_info=True)
         return False
 
 

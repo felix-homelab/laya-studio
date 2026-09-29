@@ -263,28 +263,6 @@ def _correlation(left: list[float], right: list[float]) -> float:
     return 0.0 if denominator < 1e-12 else covariance / denominator
 
 
-def _golden_section_minimize(function, low: float, high: float, iterations: int = 80) -> float:
-    """1-D minimisation by golden-section search (no scipy dependency)."""
-    inverse_phi = (math.sqrt(5.0) - 1.0) / 2.0
-    a, b = low, high
-    c = b - inverse_phi * (b - a)
-    d = a + inverse_phi * (b - a)
-    fc, fd = function(c), function(d)
-
-    for _ in range(iterations):
-        if b - a < 1e-6:
-            break
-        if fc < fd:
-            b, d, fd = d, c, fc
-            c = b - inverse_phi * (b - a)
-            fc = function(c)
-        else:
-            a, c, fc = c, d, fd
-            d = a + inverse_phi * (b - a)
-            fd = function(d)
-    return (a + b) / 2.0
-
-
 @dataclass(slots=True)
 class PlattFit:
     """A monotone logistic recalibration of a reported confidence.

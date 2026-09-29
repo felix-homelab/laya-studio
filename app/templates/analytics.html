@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import icon, badge, empty, stat %}
+{% from "_macros.html" import icon, empty, stat %}
 
 {% block title %}Analytics{% endblock %}
 {% block heading %}Confidence dashboard{% endblock %}
@@ -55,13 +55,13 @@
     <p class="mt-0.5 text-xs text-slate-400">
       Where the model's certainty lands. The act-vs-escalate bands are shaded from the live thresholds.
     </p>
+    {% set peak = (data.histogram | map(attribute='count') | max) or 1 %}
     <div class="mt-4 flex h-40 items-end gap-1">
       {% for bin in data.histogram %}
       {% set tone = 'bg-emerald-500/70' if bin.band == 'auto' else 'bg-amber-500/70' if bin.band == 'verify' else 'bg-rose-500/70' %}
-      {% set peak = (data.histogram | map(attribute='count') | max) or 1 %}
       <div class="group relative flex-1" title="{{ bin.lower|pct(0) }}–{{ bin.upper|pct(0) }}: {{ bin.count }} ({{ bin.share|pct(1) }})">
         <div class="{{ tone }} w-full rounded-t transition group-hover:opacity-100 opacity-85"
-             style="height: {{ ((bin.count / peak) * 140) if peak else 0 }}px"></div>
+             style="height: {{ (bin.count / peak) * 140 }}px"></div>
       </div>
       {% endfor %}
     </div>
@@ -294,23 +294,28 @@
     <p class="text-xs font-medium text-slate-300">
       {{ name }} <span class="text-slate-500">· max_len {{ config.max_len }} · head_max_len {{ config.head_max_len }}</span>
     </p>
+    {# Buckets outside the runtime's clamp range [0.5, 5], collected while the pills render. #}
+    {% set out_of_range = [] %}
     <div class="mt-2 flex flex-wrap gap-1.5">
       {% for bucket, temperature in config.temperature_by_options.items() %}
+      {% set clamped = temperature < 0.5 or temperature > 5 %}
+      {% if clamped %}{% set _ = out_of_range.append(bucket) %}{% endif %}
       <span class="rounded-full px-2.5 py-1 font-mono text-[11px]
-        {{ 'bg-rose-500/15 text-rose-300' if temperature < 0.5 or temperature > 5
-           else 'bg-slate-800 text-slate-300' }}"
-        title="{{ 'Outside the clamp range [0.5, 5], so the runtime clamps it and confidence from this bucket is uncalibrated' if temperature < 0.5 or temperature > 5 else 'Applied as shipped' }}">
+        {{ 'bg-rose-500/15 text-rose-300' if clamped else 'bg-slate-800 text-slate-300' }}"
+        title="{{ 'Outside the clamp range [0.5, 5], so the runtime clamps it and confidence from this bucket is uncalibrated' if clamped else 'Applied as shipped' }}">
         {{ bucket }} = {{ temperature|num(4) }}
       </span>
       {% endfor %}
     </div>
-    {% set out_of_range = config.temperature_by_options.values() | select('lt', 0.5) | list %}
     {% if out_of_range %}
     <p class="mt-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
       One or more buckets ship a temperature outside Laya's clamp range, so the runtime
-      clamps them and warns that confidence from those buckets is uncalibrated. A
-      <span class="font-mono">choice</span> question with 11 or more options is affected.
-      The schema linter warns about this while you author.
+      clamps them and warns that confidence from those buckets is uncalibrated. Affected:
+      <span class="font-mono">{{ out_of_range|join(', ') }}</span>.
+      {% if 'choice:11+' in out_of_range %}
+      The schema linter warns about a <span class="font-mono">choice</span> question with
+      11 or more options while you author.
+      {% endif %}
     </p>
     {% endif %}
   </div>

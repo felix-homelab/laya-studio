@@ -84,7 +84,9 @@ def fingerprint(exc_type: str, location: str | None) -> str:
 
 def exception_payload(exc_info: tuple[Any, BaseException, Any] | None) -> dict[str, Any] | None:
     """Turn ``sys.exc_info()`` into a record-shaped dict."""
-    if not exc_info:
+    # `logger.warning(..., exc_info=True)` outside an `except` block gives
+    # `(None, None, None)`: truthy, but there is no exception to describe.
+    if not exc_info or exc_info[0] is None:
         return None
     exc_type, exc, tb = exc_info
     name = getattr(exc_type, "__name__", str(exc_type))
@@ -105,14 +107,15 @@ def exception_payload(exc_info: tuple[Any, BaseException, Any] | None) -> dict[s
 def exception_record(exc: BaseException, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
     """A record for an exception caught outside a logging call."""
     payload = exception_payload((type(exc), exc, exc.__traceback__))
+    # Context first, so a key like `kind` or `exc` cannot overwrite the record's own.
     return {
+        **(context or {}),
         "ts": utc_now(),
         "kind": "exception",
         "level": "ERROR",
         "logger": "laya_studio.unhandled",
         "message": f"{type(exc).__name__}: {exc}",
         "exc": payload,
-        **(context or {}),
     }
 
 

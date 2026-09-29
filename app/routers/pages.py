@@ -107,6 +107,8 @@ def analytics_page(
 ) -> HTMLResponse:
     if bucket not in ("hour", "day"):
         bucket = "hour"
+    # The same range the /api/analytics endpoints accept.
+    hours = max(1, min(hours, 24 * 365))
     return templates.TemplateResponse(
         request,
         "analytics.html",

@@ -9,6 +9,7 @@ keeps the container small and means the panel runs with nothing but
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,8 @@ from fastapi.templating import Jinja2Templates
 
 from .config import get_settings
 from .inference.base import BASE_CHECKPOINT_NOTE
+
+logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -60,6 +63,8 @@ def relative_time(value: Any) -> str:
     moment = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     delta = datetime.now(timezone.utc) - moment.astimezone(timezone.utc)
     seconds = int(delta.total_seconds())
+    if seconds < -60:  # well in the future: show it, rather than hide it as "just now"
+        return format_datetime(value)
     if seconds < 60:
         return "just now"
     if seconds < 3600:
@@ -105,7 +110,7 @@ def static_url(path: str) -> str:
             relative = relative[len(prefix):]
     try:
         info = (STATIC_DIR / relative).stat()
-        stamp = f"{int(info.st_mtime)}-{info.st_size}"
+        stamp = f"{info.st_mtime_ns}-{info.st_size}"
     except OSError:  # pragma: no cover - the tag is still served, just unstamped
         stamp = "0"
     return f"/static/{relative}?v={stamp}"
@@ -116,6 +121,8 @@ def band_label(band: str) -> str:
         "act": "Act",
         "verify": "Verify",
         "escalate": "Escalate",
+        # ``confidence_band`` returns this when there is no confidence at all.
+        "unknown": "No signal",
     }.get(band, "Unknown")
 
 
@@ -172,6 +179,7 @@ def page_context(request, **extra: Any) -> dict[str, Any]:
         configuration = getattr(get_engine(), "checkpoint_configuration", None)
         engine_info["configuration"] = configuration() if callable(configuration) else {}
     except Exception:  # noqa: BLE001 - loading or broken; the banner covers both
+        logger.debug("checkpoint configuration unavailable", exc_info=True)
         engine_info["configuration"] = {}
 
     context: dict[str, Any] = {

@@ -17,7 +17,7 @@ from app.inference import (
     normalize_result,
     validate_questions,
 )
-from app.inference.base import has_errors
+from app.inference.base import extract_score, has_errors
 from app.inference.routing import detect_dominant_script, routing_decision
 
 # --- flatten_state -----------------------------------------------------------
@@ -132,6 +132,8 @@ def test_validate_accepts_noul_criteria_with_disjoint_vocabulary():
         ("שלום עולם", "hebrew"),
         ("नमस्ते दुनिया", "devanagari"),
         ("สวัสดีชาวโลก", "thai"),
+        # Syriac has no SCRIPT_RANGES entry: letters, but no recognised script.
+        ("ܫܠܡܐ ܥܠܡܐ", "other"),
         ("", "unknown"),
     ],
 )
@@ -177,6 +179,21 @@ def test_normalize_result_accepts_a_bare_answer_map():
     )
     assert result.answers["department"]["choice"] == "billing"
     assert result.model == "unknown"
+
+
+def test_normalize_result_ignores_top_level_metadata_in_a_bare_answer_map():
+    result = normalize_result(
+        {"department": {"choice": "billing"}, "usage": {"input_tokens": 12}},
+        engine_name="test",
+        latency_ms=1.0,
+    )
+    assert list(result.answers) == ["department"]
+
+
+def test_extract_score_orders_named_levels_by_rubric_not_alphabet():
+    # Listed in rubric order; alphabetically this would be High, Low, Medium.
+    answer = {"probabilities": {"Low": 0.1, "Medium": 0.2, "High": 0.7}}
+    assert extract_score(answer) == pytest.approx(1.6)
 
 
 def test_normalize_result_rejects_non_dicts():
