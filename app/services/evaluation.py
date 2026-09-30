@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -27,7 +28,7 @@ from ..inference import (
     validate_questions,
 )
 from ..inference.calibration import apply_platt_to_distribution
-from ..models import EvalSchema, Evaluation
+from ..models import EvalSchema, Evaluation, SchemaRevision
 from . import calibration as calibration_service
 
 
@@ -115,11 +116,49 @@ def pick_primary_question(
     return next(iter(questions))
 
 
+def resolve_schema_revision_id(db: Session, schema: EvalSchema) -> int | None:
+    """The immutable revision row behind a schema's current definition.
+
+    ``schema.current_revision`` is a pointer into ``schema_revisions``; this resolves
+    it to the row an evaluation should cite ([ADR 0004](../../docs/adr/0004-immutable-schema-revisions.md)).
+    Resolved with a targeted select rather than by touching ``schema.revisions``,
+    which would load the whole revision history for every evaluation.
+
+    The pointer is *lineage*, not a byte-match: when a caller passes both a schema and
+    an inline ``questions`` override (the playground always does), the row records the
+    revision that was current while it was produced, and its own ``questions`` copy
+    stays the authoritative "as sent". ``None`` when the schema has no such row, so a
+    half-migrated database degrades to "unknown taxonomy" rather than failing a
+    decision.
+    """
+    if schema.current_revision is None:
+        return None
+    return db.scalar(
+        select(SchemaRevision.id).where(
+            SchemaRevision.schema_id == schema.id,
+            SchemaRevision.revision == schema.current_revision,
+        )
+    )
+
+
 def _calibrate_entry(
     entry: dict[str, Any],
     active: calibration_service.ActiveCalibration,
 ) -> dict[str, Any]:
-    """Apply the recalibration map to one question result, in place."""
+    """Apply the recalibration map to one question result, in place.
+
+    Two different operations happen here and they must not be conflated:
+
+    * ``confidence`` becomes ``fit.apply(raw_confidence)`` — and nothing else. The
+      map is fitted on exactly that quantity (``services/calibration.py`` reads
+      ``Evaluation.confidence`` against correctness), and
+      ``docs/api-reference.md`` documents the calibrated field as "what the model
+      reported *after* the calibration map was applied".
+    * the breakdown is rescaled *as a distribution*, because a choice/score
+      breakdown is a simplex rather than a single score. That renormalises it, so
+      its winning entry is a different number from the map's output on Laya's
+      entropy-based confidence — see ``docs/laya-integration.md``.
+    """
     if active.is_identity:
         entry["calibrated"] = False
         entry["temperature"] = None
@@ -155,17 +194,15 @@ def _calibrate_entry(
         entry["alternatives"] = [item for item in entry["breakdown"] if not item["is_top"]]
 
         # The choice itself can flip under a softening transform only if two
-        # options were within the temperature's noise floor; keep the argmax so
-        # the record stays self-consistent with its own breakdown.
+        # options were within the temperature's noise floor; keep the argmax of the
+        # *rescaled* distribution so the record stays self-consistent with the
+        # breakdown it stores. `confidence` deliberately does not follow it.
         top = entry["breakdown"][0] if entry["breakdown"] else None
         if top:
             if entry.get("type") == "choice":
                 entry["choice"] = top["label"]
             elif entry.get("type") == "score":
                 entry["level"] = top["label"]
-            entry["confidence"] = top["probability"]
-            if raw_confidence is not None:
-                entry["raw_confidence"] = raw_confidence
 
     entry["calibrated"] = True
     entry["temperature"] = None if fit.temperature is None else round(fit.temperature, 6)
@@ -261,6 +298,7 @@ def run_evaluation(
 
     evaluation = Evaluation(
         schema_id=schema.id if schema is not None else None,
+        schema_revision_id=None if schema is None else resolve_schema_revision_id(db, schema),
         state=state_dict,
         state_text=state_text,
         questions=resolved_questions,

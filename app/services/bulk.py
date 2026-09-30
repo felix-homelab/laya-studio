@@ -172,7 +172,7 @@ def create_job(
     db: Session,
     *,
     name: str,
-    content: bytes,
+    dataset: ParsedDataset,
     filename: str = "",
     schema: EvalSchema | None = None,
     state_column: str | None = None,
@@ -180,9 +180,12 @@ def create_job(
     model: str | None = None,
     commit: bool = True,
 ) -> BulkJob:
-    """Create a bulk job record in ``pending`` state."""
-    dataset = parse_dataset(content, filename)
+    """Create a bulk job record in ``pending`` state.
 
+    Takes the *parsed* dataset rather than the raw upload. Every caller needs the
+    parsed rows for :func:`attach_rows` anyway, so the bytes were only ever here to be
+    parsed a second time — decoding and parsing a multi-megabyte upload twice per job.
+    """
     warnings = list(dataset.warnings)
     if state_column and state_column not in dataset.columns:
         # build_state falls back to every column; say so rather than silently
@@ -381,20 +384,32 @@ def summarize(db: Session, job: BulkJob) -> dict[str, Any]:
         "band_counts": None,
     }
 
-    if labelled and len(labelled_confidences) == len(labelled):
-        report = calibration_report(labelled_confidences, correct)
-        summary.update(
-            {
-                "accuracy": report.accuracy,
-                "ece": report.ece,
-                "mce": report.mce,
-                "brier": report.brier,
-                "calibration_note": report.note,
-                "reliability_bins": [item.to_dict() for item in report.bins],
-            }
-        )
-        # How often would the hybrid ladder have needed help?
-        summary["band_counts"] = _band_counts(labelled_confidences)
+    if labelled:
+        # Accuracy depends on the labels alone: a row is right or wrong whether or not
+        # its confidence was recorded. ECE, Brier and the routing bands do need one
+        # confidence per row, so those stay behind the completeness check below.
+        summary["accuracy"] = sum(1 for outcome in correct if outcome) / len(correct)
+        if len(labelled_confidences) == len(labelled):
+            report = calibration_report(labelled_confidences, correct)
+            summary.update(
+                {
+                    "accuracy": report.accuracy,
+                    "ece": report.ece,
+                    "mce": report.mce,
+                    "brier": report.brier,
+                    "calibration_note": report.note,
+                    "reliability_bins": [item.to_dict() for item in report.bins],
+                }
+            )
+            # How often would the hybrid ladder have needed help?
+            summary["band_counts"] = _band_counts(labelled_confidences)
+        else:
+            summary["calibration_note"] = (
+                f"{len(labelled)} labelled row(s), but "
+                f"{len(labelled) - len(labelled_confidences)} of them recorded no "
+                "confidence, so ECE, Brier and the routing bands are withheld for this "
+                "batch. Accuracy is unaffected."
+            )
 
     return summary
 

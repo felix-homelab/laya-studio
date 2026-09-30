@@ -257,6 +257,13 @@ curl -X POST localhost:8000/api/analytics/calibration/refit
 | before | 0.4462 | 0.7519 | 0.3550 | 0.404 vs 0.850 |
 | after | **0.0544** | 0.1207 | 0.1140 | 0.845 vs 0.850 |
 
+Both rows are a point-in-time measurement of one checkout and one checkpoint:
+`python -m app.cli load-sample`, then `POST /api/analytics/calibration/refit`, then
+a rerun of the job. Repeating those three steps is what confirms the figures for
+*your* data — the exact value a row stores as its calibrated `confidence` is part
+of what is being measured, so treat these as the shape of the effect (roughly an
+order of magnitude off ECE, in this direction) rather than as constants.
+
 And the reliability diagram becomes a diagram rather than a diagonal line:
 
 ```

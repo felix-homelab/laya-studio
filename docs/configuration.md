@@ -211,7 +211,7 @@ meaningful against calibrated scores. See
 | Variable | Default | Notes |
 |---|---|---|
 | `LAYA_STUDIO_LLM_PROVIDER` | `none` | `none` \| `openai` \| `anthropic`. |
-| `LAYA_STUDIO_LLM_TIMEOUT` | `30` | Seconds. Also used as the SMTP timeout. |
+| `LAYA_STUDIO_LLM_TIMEOUT` | `30` | Seconds. Governs one verification call. |
 | `LAYA_STUDIO_LLM_MAX_TOKENS` | `512` | The verification reply is one small JSON object; this is generous. |
 | `LAYA_STUDIO_OPENAI_API_KEY` | *(unset)* | |
 | `LAYA_STUDIO_OPENAI_MODEL` | `gpt-4o-mini` | |
@@ -249,6 +249,7 @@ works.
 | `LAYA_STUDIO_SMTP_PASSWORD` | *(unset)* | |
 | `LAYA_STUDIO_SMTP_FROM` | `laya-studio@localhost` | |
 | `LAYA_STUDIO_SMTP_STARTTLS` | `true` | |
+| `LAYA_STUDIO_SMTP_TIMEOUT` | `30` | Seconds. Socket timeout for one send, independent of `LLM_TIMEOUT`. |
 
 ### The SSRF allow-list, carefully
 

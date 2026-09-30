@@ -297,3 +297,277 @@ def _evaluate(db, schema_id: int, index: int):
         primary_question="department",
         commit=False,
     )
+
+
+# --- what `confidence` means once a map is applied ---------------------------
+#
+# Two operations run over a calibrated question result and they are easy to
+# conflate: the *scalar* map (`fit.apply(confidence)`) and the *distribution*
+# rescale. These pin which one `confidence` holds, because the ladder, the bands
+# and the calibration monitor all gate on it.
+
+
+def test_a_calibrated_entry_stores_the_map_output_and_not_the_winning_probability():
+    """`confidence` is `fit.apply(raw)`, never the top of the rescaled breakdown.
+
+    The map is fitted on Laya's entropy-based confidence (``services/calibration.py``
+    reads ``Evaluation.confidence`` against correctness), so its output is the only
+    value ``confidence`` may hold. A question whose raw confidence is 0.40 while its
+    top probability is 0.55 is the ordinary case, not a corner: the two numbers are
+    different quantities, as ``docs/laya-integration.md`` spells out.
+    """
+    from app.inference.calibration import PlattFit
+    from app.services.calibration import ActiveCalibration
+    from app.services.evaluation import _calibrate_entry
+
+    fit = PlattFit(slope=0.43, intercept=2.16, fitted=True)
+    entry = {
+        "question": "department",
+        "type": "choice",
+        "choice": "billing",
+        "confidence": 0.40,
+        "breakdown": [
+            {"label": "billing", "raw_label": "billing", "probability": 0.55, "rank": 1, "is_top": True},
+            {"label": "other", "raw_label": "other", "probability": 0.45, "rank": 2, "is_top": False},
+        ],
+        "alternatives": [
+            {"label": "other", "raw_label": "other", "probability": 0.45, "rank": 2, "is_top": False}
+        ],
+    }
+
+    calibrated = _calibrate_entry(
+        dict(entry), ActiveCalibration(fit=fit, source="fitted", n_samples=40, note="fitted")
+    )
+
+    assert calibrated["calibrated"] is True
+    assert calibrated["raw_confidence"] == 0.40
+    assert calibrated["confidence"] == round(fit.apply(0.40), 6)
+    assert calibrated["confidence"] != calibrated["breakdown"][0]["probability"]
+    # The argmax still follows the rescaled distribution, so the record agrees with
+    # the breakdown it stores.
+    assert calibrated["choice"] == calibrated["breakdown"][0]["label"]
+
+
+def test_a_base_rate_map_reaches_the_scalar_confidence_not_the_flattened_breakdown():
+    """Slope 0 maps every row to the base rate — including rows with a breakdown.
+
+    The distribution rescale is a separate operation, and under a constant map it
+    flattens a k-way breakdown to 1/k. Storing *that* as ``confidence`` would
+    replace the map's 0.85 with 0.25 on a 4-way question.
+    """
+    from app.inference.calibration import PlattFit, safe_logit
+    from app.services.calibration import ActiveCalibration
+    from app.services.evaluation import _calibrate_entry
+
+    base_rate = 0.85
+    fit = PlattFit(slope=0.0, intercept=safe_logit(base_rate), fitted=True)
+    assert not fit.is_identity, "a base-rate map is not the identity, so it is applied"
+
+    entry = {
+        "question": "department",
+        "type": "choice",
+        "choice": "billing",
+        "confidence": 0.40,
+        "breakdown": [
+            {"label": label, "raw_label": label, "probability": p, "rank": rank + 1, "is_top": rank == 0}
+            for rank, (label, p) in enumerate(
+                [("billing", 0.4), ("technical", 0.3), ("sales", 0.2), ("other", 0.1)]
+            )
+        ],
+    }
+
+    calibrated = _calibrate_entry(
+        dict(entry), ActiveCalibration(fit=fit, source="fitted", n_samples=40, note="fitted")
+    )
+
+    assert calibrated["confidence"] == pytest.approx(base_rate, abs=1e-6)
+    # No temperature flattens a curve *and* re-centres it; the field says so.
+    assert calibrated["temperature"] is None
+    assert calibrated["breakdown"][0]["probability"] == 0.25
+    assert calibrated["confidence"] != calibrated["breakdown"][0]["probability"]
+
+
+def test_an_entry_without_a_confidence_does_not_acquire_one_from_the_breakdown():
+    """A scalar map applies to a scalar; it must not invent one where none was sent."""
+    from app.inference.calibration import PlattFit
+    from app.services.calibration import ActiveCalibration
+    from app.services.evaluation import _calibrate_entry
+
+    fit = PlattFit(slope=0.43, intercept=2.16, fitted=True)
+    entry = {
+        "question": "department",
+        "type": "choice",
+        "choice": "billing",
+        "confidence": None,
+        "breakdown": [
+            {"label": "billing", "raw_label": "billing", "probability": 0.55, "rank": 1, "is_top": True},
+            {"label": "other", "raw_label": "other", "probability": 0.45, "rank": 2, "is_top": False},
+        ],
+    }
+
+    calibrated = _calibrate_entry(
+        dict(entry), ActiveCalibration(fit=fit, source="fitted", n_samples=40, note="fitted")
+    )
+
+    assert calibrated["confidence"] is None
+    assert "raw_confidence" not in calibrated
+    # The breakdown is still rescaled — that operation never needed a scalar.
+    assert sum(item["probability"] for item in calibrated["breakdown"]) == pytest.approx(
+        1.0, rel=1e-5
+    )
+    assert calibrated["breakdown"][0]["probability"] != 0.55
+
+
+def test_a_constant_confidence_is_stored_as_the_base_rate_not_as_one_over_k(
+    client, triage_schema, scripted
+):
+    """End to end: the first row a degenerate fit applies to reports the base rate.
+
+    Every stored confidence in the slice is 0.55, so once the tenth labelled row
+    exists ``fit_platt`` degenerates to the observed base rate — a scalar map. The
+    same constant map flattens the rescaled 4-way breakdown to exactly 0.25, and
+    0.25 is what the ladder used to gate the decision on.
+    """
+    from app.inference.calibration import PlattFit
+
+    scripted(
+        answers={
+            "department": {
+                "type": "choice",
+                "choice": "billing",
+                "probabilities": {"billing": 0.4, "technical": 0.3, "sales": 0.2, "other": 0.1},
+                "confidence": 0.55,
+            }
+        }
+    )
+
+    created: dict = {}
+    for index in range(11):
+        created = client.post(
+            "/api/playground/evaluate",
+            json={
+                "state": {"body": f"We were billed twice, message {index}."},
+                "schema_id": triage_schema["id"],
+                "primary_question": "department",
+            },
+        ).json()
+        # Nine right and one wrong: enough labelled rows to fit, and not all one
+        # outcome, which would make the map unidentifiable instead of degenerate.
+        client.post(
+            f"/api/playground/evaluations/{created['id']}/label",
+            json={"label": "billing" if index < 9 else "technical"},
+        )
+
+    entry = next(item for item in created["question_results"] if item["question"] == "department")
+
+    # Rows 0..9 saw fewer than calibration_min_samples labelled rows, so they kept
+    # the raw value; row 10 is the first the base-rate map has been fitted for.
+    assert entry["calibrated"] is True, entry
+    assert entry["raw_confidence"] == 0.55
+    assert entry["calibration_slope"] == 0.0
+    assert entry["temperature"] is None
+
+    # The row's own report is internally consistent: replays the map it names.
+    base_rate_map = PlattFit(slope=0.0, intercept=entry["calibration_intercept"], fitted=True)
+    assert entry["confidence"] == pytest.approx(
+        base_rate_map.apply(entry["raw_confidence"]), abs=1e-5
+    )
+
+    # ...and it is not the flattened breakdown, which is where the 1/k bug lived.
+    assert entry["breakdown"][0]["probability"] == 0.25
+    assert entry["confidence"] > 0.5
+
+
+def test_the_fitter_reads_the_field_the_evaluator_writes(client, triage_schema, scripted):
+    """One field, one scale: `Evaluation.confidence` in, the same value persisted.
+
+    `services/calibration.py` builds every fit from ``(Evaluation.confidence,
+    correct)``, so a refit only describes the mapping the evaluator actually applied
+    if that column holds the map's output. Storing the winning breakdown entry
+    instead made each refit consume a fresh, differently-scaled quantity, so the
+    fitted map described a transform nobody had run.
+    """
+    from sqlalchemy import select
+
+    from app.config import get_settings
+    from app.db import get_session_factory
+    from app.inference.calibration import PlattFit, fit_platt
+    from app.models import Evaluation
+    from app.services import calibration as calibration_service
+
+    scripted(
+        answers={
+            "department": {
+                "type": "choice",
+                "choice": "billing",
+                "probabilities": {"billing": 0.4, "technical": 0.3, "sales": 0.2, "other": 0.1},
+                "confidence": 0.55,
+            }
+        }
+    )
+
+    created: dict = {}
+    for index in range(11):
+        created = client.post(
+            "/api/playground/evaluate",
+            json={
+                "state": {"body": f"We were billed twice, message {index}."},
+                "schema_id": triage_schema["id"],
+                "primary_question": "department",
+            },
+        ).json()
+        client.post(
+            f"/api/playground/evaluations/{created['id']}/label",
+            json={"label": "billing" if index < 9 else "technical"},
+        )
+
+    entry = next(item for item in created["question_results"] if item["question"] == "department")
+    assert entry["calibrated"] is True, entry
+
+    reported = PlattFit(
+        slope=entry["calibration_slope"],
+        intercept=entry["calibration_intercept"],
+        fitted=True,
+    )
+    assert entry["confidence"] == pytest.approx(reported.apply(entry["raw_confidence"]), abs=1e-5)
+
+    db = get_session_factory()()
+    try:
+        # The row as persisted — this is what the next fit reads back off the table.
+        stored = db.get(Evaluation, created["id"])
+        assert stored is not None and stored.calibrated is True
+        assert stored.raw_confidence == entry["raw_confidence"]
+        assert stored.confidence == pytest.approx(
+            reported.apply(stored.raw_confidence), abs=1e-6
+        )
+
+        statement = (
+            select(Evaluation.confidence, Evaluation.top_choice, Evaluation.label)
+            .where(
+                Evaluation.schema_id == triage_schema["id"],
+                Evaluation.primary_question == "department",
+                Evaluation.confidence.is_not(None),
+                Evaluation.label.is_not(None),
+                Evaluation.top_choice.is_not(None),
+            )
+            .order_by(Evaluation.id)
+        )
+        pairs = [
+            (float(confidence), str(top).strip().lower() == str(label).strip().lower())
+            for confidence, top, label in db.execute(statement)
+        ]
+        assert len(pairs) >= get_settings().calibration_min_samples
+
+        # Re-deriving the map from exactly those persisted pairs reproduces the map
+        # the panel stores — fitter and writer agree on which quantity this is.
+        refit = fit_platt([value for value, _ in pairs], [outcome for _, outcome in pairs])
+        snapshot = calibration_service.fit_and_store(
+            db, primitive="choice", question="department", schema_id=triage_schema["id"]
+        )
+    finally:
+        db.close()
+
+    assert snapshot is not None, "a slice with enough labelled rows must produce a snapshot"
+    assert snapshot.n_samples == len(pairs)
+    assert snapshot.slope == pytest.approx(refit.slope, abs=1e-6)
+    assert snapshot.intercept == pytest.approx(refit.intercept, abs=1e-6)

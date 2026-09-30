@@ -218,6 +218,106 @@ const LayaStudio = (() => {
       </div>`;
   }
 
+  /* ----------------------------------------------------- engine readiness */
+
+  /** How long to wait between readiness probes while Laya is still loading. */
+  const ENGINE_POLL_MS = 5000;
+
+  /**
+   * Follow the engine until it settles, and patch the result into the page.
+   *
+   * The loading banner, the sidebar card and the header dot are all rendered by the
+   * server from the state that existed at page load, and the banner promises it
+   * "disappears on its own" — which, until now, nothing made true except a reload.
+   * On a cold cache that is minutes of a page insisting the engine is still coming up.
+   *
+   * `GET /api/health` is in the request-log skip list
+   * (``app/observability/middleware.py``), so probing it costs one local row count
+   * and writes nothing to the log store.
+   *
+   * Patched in place rather than by reloading, deliberately: a reload would discard
+   * whatever the operator had typed into the playground, a schema editor or a
+   * workflow block script.
+   */
+  function watchEngineState() {
+    const initial = document.body.dataset.engineState;
+    if (!initial || initial === 'ready' || initial === 'failed') return; // already settled
+
+    const poll = async () => {
+      let health;
+      try {
+        health = await api('/api/health');
+      } catch {
+        return; // the panel cannot answer health: not this poller's problem
+      }
+      const engine = (health && health.engine) || {};
+      if (engine.state === 'ready' || engine.state === 'failed') {
+        applyEngineState(engine.state, engine);
+        return;
+      }
+      window.setTimeout(poll, ENGINE_POLL_MS);
+    };
+
+    window.setTimeout(poll, ENGINE_POLL_MS);
+  }
+
+  /** Write one settled engine state into the three places that show it. */
+  function applyEngineState(state, engine) {
+    const ready = state === 'ready';
+    const error = engine.error || 'Laya could not be loaded.';
+    const name = engine.name || 'laya';
+
+    const banner = document.getElementById('engine-banner');
+    if (banner) {
+      if (ready) {
+        banner.remove();
+      } else {
+        // Mirrors the server-rendered `failed` banner in base.html.
+        banner.className = 'mb-5 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-5 py-4';
+        banner.innerHTML = `
+          <p class="text-sm font-semibold text-rose-200">Laya could not be loaded</p>
+          <pre class="mt-2 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-rose-200/80">${escapeHtml(error)}</pre>
+          <p class="mt-2 text-xs text-rose-200/80">
+            Run <span class="font-mono">laya-studio check</span> to diagnose the environment.
+          </p>`;
+      }
+    }
+
+    const dot = document.getElementById('engine-dot');
+    if (dot) dot.className = `h-1.5 w-1.5 rounded-full ${ready ? 'bg-emerald-400' : 'bg-rose-400'}`;
+
+    const label = document.getElementById('engine-status');
+    if (label) {
+      label.textContent = ready && engine.device ? `${name} · ${engine.device}` : name;
+    }
+
+    const card = document.getElementById('engine-card');
+    if (card) {
+      const checkpoints = ready && Array.isArray(engine.loaded_checkpoints)
+        ? engine.loaded_checkpoints.filter(Boolean).join(', ')
+        : '';
+      // Kept to the two facts the operator acts on rather than reproducing the
+      // server's fuller card; the next navigation renders that one properly.
+      card.innerHTML = ready
+        ? `<div class="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
+             <p class="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300">
+               <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Laya runtime
+             </p>
+             <p class="mt-1 text-[11px] leading-snug text-emerald-200/80">
+               ready on ${escapeHtml(engine.device || 'auto')}${checkpoints ? ` · ${escapeHtml(checkpoints)}` : ''}
+             </p>
+           </div>`
+        : `<div class="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3">
+             <p class="flex items-center gap-1.5 text-[11px] font-semibold text-rose-300">
+               Engine unavailable
+             </p>
+             <p class="mt-1 text-[11px] leading-snug text-rose-200/80">${escapeHtml(error)}</p>
+           </div>`;
+    }
+  }
+
+  watchEngineState();
+
   return {
     api, toast, escapeHtml, pct, num, bandClasses, barTone, statusClasses, debounce, copy,
     questionCard, routingLine, summarizeState,

@@ -351,6 +351,7 @@ def run_workflow(
         state_text=evaluation.state_text,
         reason=_route_reason(route, verification),
         alternatives=alternatives,
+        landing_route=effective_route,
         run=run,
         extra={
             "effective_route": effective_route,

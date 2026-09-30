@@ -64,7 +64,25 @@ def dry_run(db: Session, workflow, state: dict[str, Any] | str, *, source: str) 
 
     Shared with the manual trigger in :mod:`app.routers.workflows`, so a dry run
     means the same thing on every door.
+
+    A disabled workflow is refused before anything is scored, with the same
+    ``route: "error"`` answer :func:`app.services.workflows.run_workflow` gives. A dry
+    run is the call an operator makes *before* going live, so reporting a route for a
+    workflow that is switched off is the one answer it must not give — and reporting
+    it used to cost a persisted evaluation too.
     """
+    if not workflow.enabled:
+        return {
+            "dry_run": True,
+            "route": "error",
+            "effective_route": "error",
+            "verification": None,
+            "actions": [],
+            "run": None,
+            "evaluation": None,
+            "error": "This workflow is disabled.",
+        }
+
     schema = None
     if workflow.schema_id:
         from ..models import EvalSchema

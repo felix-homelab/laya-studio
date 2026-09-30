@@ -84,6 +84,51 @@ def test_calibration_report_needs_labels_then_computes_them(client, triage_schem
     assert report["trend"]
 
 
+def test_the_calibration_monitor_ignores_rows_with_no_recorded_choice(
+    client, session, triage_schema
+):
+    """A label with no model choice is unscorable, not wrong.
+
+    ``_overview`` and ``calibration._labelled_pairs`` both require `top_choice`; this
+    panel used to compare the string `"None"` against the label and count the row as
+    a miss, which moved the sample count *and* the accuracy.
+    """
+    from app.models import Evaluation
+
+    seed_evaluations(client, triage_schema, 3)
+
+    # A row that recorded a label and a confidence but no choice: nothing to score it
+    # against. Everything else is left to the model defaults, which is the point.
+    session.add(
+        Evaluation(
+            schema_id=triage_schema["id"],
+            state={"body": "we were billed twice"},
+            state_text="body: we were billed twice",
+            primary_question="department",
+            top_choice=None,
+            confidence=0.99,
+            source="playground",
+            label="billing",
+        )
+    )
+    session.commit()
+
+    report = client.get("/api/analytics/calibration").json()
+    assert report["n_samples"] == 3, "the unscoreable row is not a labelled sample"
+
+    # And the accuracy is the three scoreable rows' accuracy, not three quarters of it.
+    scoreable = [
+        row
+        for row in client.get("/api/playground/history?limit=20").json()
+        if row["top_choice"] and row["label"]
+    ]
+    assert len(scoreable) == 3
+    expected = sum(
+        1 for row in scoreable if row["label"].strip().lower() == row["top_choice"].strip().lower()
+    ) / len(scoreable)
+    assert report["accuracy"] == pytest.approx(expected, abs=1e-6)
+
+
 def test_histogram_bins_are_flagged_with_their_band(client, triage_schema):
     seed_evaluations(client, triage_schema, 8)
     histogram = client.get("/api/analytics/dashboard").json()["histogram"]

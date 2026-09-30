@@ -26,6 +26,37 @@ def _get_job(db: Session, job_id: int) -> BulkJob:
     return job
 
 
+#: Rows returned alongside a job by default, and the ceiling a caller may ask for.
+DEFAULT_ITEM_LIMIT = 200
+MAX_ITEM_LIMIT = 2000
+
+
+def _detail(
+    db: Session,
+    job: BulkJob,
+    *,
+    include_items: bool = True,
+    item_limit: int = DEFAULT_ITEM_LIMIT,
+) -> BulkJobDetail:
+    """A job's detail response, with its rows bounded by ``item_limit``.
+
+    Built from the summary model rather than by validating ``BulkJobDetail`` against
+    the ORM object: that reads the ``items`` relationship and loads every row of the
+    job — up to ``MAX_BULK_ROWS`` of them — whatever ``item_limit`` said. Shared by the
+    upload, fetch and rerun responses so all three bound their rows the same way.
+    """
+    detail = BulkJobDetail(**BulkJobSummary.model_validate(job).model_dump())
+    if include_items:
+        rows = db.scalars(
+            select(BulkJobItem)
+            .where(BulkJobItem.job_id == job.id)
+            .order_by(BulkJobItem.row_index)
+            .limit(item_limit)
+        )
+        detail.items = [BulkItemResponse.model_validate(row) for row in rows]
+    return detail
+
+
 @router.post("/upload", response_model=BulkJobDetail, status_code=status.HTTP_201_CREATED)
 async def upload(
     file: Annotated[UploadFile, File(description="CSV or JSON dataset")],
@@ -57,7 +88,7 @@ async def upload(
         job = bulk_service.create_job(
             db,
             name=name or (file.filename or "Bulk run"),
-            content=content,
+            dataset=dataset,
             filename=file.filename or "",
             schema=schema,
             state_column=state_column or None,
@@ -67,7 +98,9 @@ async def upload(
         bulk_service.attach_rows(db, job, dataset)
         bulk_service.run_job(db, job)
         db.refresh(job)
-        return BulkJobDetail.model_validate(job)
+        # Bounded like the fetch endpoint: a 5 000-row job must not answer with 5 000
+        # items merely because it was uploaded rather than looked up.
+        return _detail(db, job)
 
     # The handler is async only to stream the upload; scoring every row is
     # synchronous DB and model work, so it runs off the event loop.
@@ -90,29 +123,17 @@ def list_jobs(
 def get_job(
     job_id: int,
     include_items: bool = True,
-    item_limit: int = Query(default=200, ge=1, le=2000),
+    item_limit: int = Query(default=DEFAULT_ITEM_LIMIT, ge=1, le=MAX_ITEM_LIMIT),
     db: Session = Depends(get_db),
 ) -> BulkJobDetail:
-    job = _get_job(db, job_id)
-    # Validate as a summary: validating the detail model would read `job.items`
-    # and load every row of the job, whatever `item_limit` says.
-    detail = BulkJobDetail(**BulkJobSummary.model_validate(job).model_dump())
-    if include_items:
-        rows = db.scalars(
-            select(BulkJobItem)
-            .where(BulkJobItem.job_id == job_id)
-            .order_by(BulkJobItem.row_index)
-            .limit(item_limit)
-        )
-        detail.items = [BulkItemResponse.model_validate(row) for row in rows]
-    return detail
+    return _detail(db, _get_job(db, job_id), include_items=include_items, item_limit=item_limit)
 
 
 @router.get("/jobs/{job_id}/items", response_model=list[BulkItemResponse])
 def list_items(
     job_id: int,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=100, ge=1, le=2000),
+    limit: int = Query(default=100, ge=1, le=MAX_ITEM_LIMIT),
     db: Session = Depends(get_db),
 ) -> list[BulkItemResponse]:
     _get_job(db, job_id)
@@ -135,7 +156,7 @@ def rerun_job(job_id: int, db: Session = Depends(get_db)) -> BulkJobDetail:
     except bulk_service.BulkError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     db.refresh(job)
-    return BulkJobDetail.model_validate(job)
+    return _detail(db, job)
 
 
 @router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)

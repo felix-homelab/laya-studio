@@ -82,6 +82,46 @@ def test_evaluate_rejects_an_invalid_bundle(client):
     assert "at least two labels" in response.json()["detail"]
 
 
+def test_a_refused_evaluation_is_a_422_not_a_400(client, triage_schema, scripted):
+    """Every refusal on this API is a 422, including one raised from the service.
+
+    This route used to re-map a service `ValueError` to 400, which made the console
+    the only endpoint with a status nothing else in the app produces.
+    """
+    scripted(raises=ValueError("the state could not be coerced"))
+
+    response = client.post(
+        "/api/playground/evaluate",
+        json={"state": "hello", "schema_id": triage_schema["id"]},
+    )
+
+    assert response.status_code == 422
+    assert "coerced" in response.json()["detail"]
+
+
+def test_a_question_that_cannot_fit_keeps_its_remedy(client, triage_schema, scripted):
+    """`QuestionTooLarge` subclasses `ValueError`, so the 400 catch-all swallowed it.
+
+    The remedy is the whole point of that error type: Laya raises rather than
+    truncating the options, and the remedy names the two limits that have to move
+    together to fix it. Answering 400 dropped it on the panel's main page.
+    """
+    from app.inference.base import QuestionTooLarge
+
+    message = "question 'department' options exceed head_max_len=192"
+    scripted(raises=QuestionTooLarge(message))
+
+    response = client.post(
+        "/api/playground/evaluate",
+        json={"state": "hello", "schema_id": triage_schema["id"]},
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert message in body["detail"]
+    assert "LAYA_STUDIO_LAYA_HEAD_MAX_LEN" in body["remedy"]
+
+
 def test_evaluate_can_skip_persistence(client, triage_schema, sample_state):
     response = client.post(
         "/api/playground/evaluate",

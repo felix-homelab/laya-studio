@@ -87,7 +87,7 @@ def load_sample(
         job = bulk_service.create_job(
             db,
             name=SAMPLE_DATASETS[filename][1],
-            content=content,
+            dataset=dataset,
             filename=filename,
             schema=schema,
             state_column=state_column,

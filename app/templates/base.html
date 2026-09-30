@@ -20,7 +20,7 @@
   </script>
   <link rel="stylesheet" href="{{ asset('css/app.css') }}">
 </head>
-<body class="h-full bg-slate-950 text-slate-200 antialiased">
+<body class="h-full bg-slate-950 text-slate-200 antialiased" data-engine-state="{{ engine_state }}">
 {% from "_macros.html" import icon, badge, band_chip %}
 
 <div class="flex min-h-screen">
@@ -49,6 +49,8 @@
     </nav>
 
     <div class="shrink-0 space-y-3 border-t border-slate-800 p-4">
+      {# Patched in place by app.js once the engine settles; see watchEngineState(). #}
+      <div id="engine-card">
       {% if engine_state == "ready" %}
       <div class="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
         <p class="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300">
@@ -91,6 +93,7 @@
         </p>
       </div>
       {% endif %}
+      </div>
 
       <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-[11px] text-slate-400">
         <p class="flex items-center justify-between">
@@ -129,8 +132,8 @@
 
       <div class="hidden items-center gap-2 text-xs text-slate-500 sm:flex">
         {% set dot = 'bg-emerald-400' if engine_state == 'ready' else ('bg-rose-400' if engine_state == 'failed' else 'bg-sky-400 animate-pulse') %}
-        <span class="h-1.5 w-1.5 rounded-full {{ dot }}"></span>
-        <span>{{ engine_info.name }}{% if engine_info.device %} · {{ engine_info.device }}{% endif %}</span>
+        <span id="engine-dot" class="h-1.5 w-1.5 rounded-full {{ dot }}"></span>
+        <span id="engine-status">{{ engine_info.name }}{% if engine_info.device %} · {{ engine_info.device }}{% endif %}</span>
       </div>
     </header>
 

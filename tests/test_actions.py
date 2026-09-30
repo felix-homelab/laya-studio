@@ -164,6 +164,58 @@ def test_email_without_an_smtp_host_is_skipped():
     assert "SMTP host" in outcome.error
 
 
+def test_email_uses_the_smtp_timeout_not_the_llm_timeout(monkeypatch):
+    """The relay's socket timeout is its own setting.
+
+    It used to be `llm_timeout`, so tuning the generative fallback silently retuned
+    every email send as well.
+    """
+    import smtplib
+
+    captured: dict = {}
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=None):
+            captured.update(host=host, port=port, timeout=timeout)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def starttls(self):
+            captured["starttls"] = True
+
+        def send_message(self, message):
+            captured["subject"] = message["Subject"]
+
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+
+    settings = dataclasses.replace(
+        get_settings(),
+        email_enabled=True,
+        smtp_host="smtp.example.com",
+        smtp_port=2525,
+        smtp_starttls=True,
+        smtp_timeout=1.5,
+        llm_timeout=99.0,
+    )
+
+    outcome = actions.email_action(
+        {"to": "ops@example.com", "subject": "Triage result"},
+        {"choice": "billing"},
+        settings=settings,
+    )
+
+    assert outcome.status == "ok", outcome.error
+    assert captured["host"] == "smtp.example.com"
+    assert captured["port"] == 2525
+    assert captured["timeout"] == 1.5, "the send must use SMTP_TIMEOUT, not LLM_TIMEOUT"
+    assert captured["starttls"] is True
+    assert captured["subject"] == "Triage result"
+
+
 # --- dispatch ----------------------------------------------------------------
 
 

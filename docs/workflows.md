@@ -103,11 +103,12 @@ too.
 |---|---|
 | `{workflow_key}`, `{workflow_name}`, `{workflow_id}` | |
 | `{workflow_run_id}`, `{evaluation_id}` | |
-| `{route}`, `{effective_route}` | |
+| `{route}` | the rung the confidence ladder chose: `auto`, `verify` or `review` |
+| `{effective_route}` | where the run landed after verification: the same value, or `auto` when the fallback agreed / `review` when it failed, disagreed, or was unavailable |
 | `{question}`, `{choice}`, `{confidence}` | |
 | `{state_text}` | the flattened state |
 | `{reason}` | why the run took its route: `auto_confidence`, `low_confidence`, `verified_agreement`, `verification_disagreement` or `verification_unavailable` |
-| `{priority}` | 100 for `review`, else 0 |
+| `{priority}` | 100 when the run **lands** in `review`, else 0 — so a verification failure that escalates into the queue queues with the same weight as a low-confidence escalation. An explicit `config.priority` on the step overrides it. |
 | `{verification}` | the verdict dict, when one ran |
 
 ### Webhook steps

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 CSV_WITH_LABELS = (
     "subject,body,truth\n"
     "Duplicate charge,We were billed twice and need a refund,billing\n"
@@ -135,3 +137,60 @@ def test_rerun_replaces_rather_than_duplicates_evaluations(client, triage_schema
     # A rerun scores the rows again; it is not idempotent by design, but the row
     # count must grow by exactly the size of the batch.
     assert after == before + 4
+
+
+def test_accuracy_survives_a_labelled_row_with_no_confidence(session):
+    """Accuracy needs the labels; only ECE, Brier and the bands need a confidence.
+
+    ``summarize`` used to withhold all four together, so a single row whose confidence
+    was never recorded silently removed a computable accuracy from the batch.
+    """
+    from app.models import BulkJob, BulkJobItem
+    from app.services import bulk as bulk_service
+
+    job = BulkJob(name="Partial", status="succeeded", total_rows=3, processed_rows=3)
+    session.add(job)
+    session.flush()
+    session.add_all(
+        [
+            BulkJobItem(
+                job_id=job.id,
+                row_index=0,
+                state={"text": "a"},
+                label="billing",
+                predicted="billing",
+                confidence=0.9,
+                ok=True,
+            ),
+            BulkJobItem(
+                job_id=job.id,
+                row_index=1,
+                state={"text": "b"},
+                label="sales",
+                predicted="billing",
+                confidence=0.4,
+                ok=True,
+            ),
+            BulkJobItem(
+                job_id=job.id,
+                row_index=2,
+                state={"text": "c"},
+                label="other",
+                predicted="other",
+                confidence=None,
+                ok=True,
+            ),
+        ]
+    )
+    session.commit()
+
+    summary = bulk_service.summarize(session, job)
+
+    assert summary["labelled"] == 3
+    assert summary["accuracy"] == pytest.approx(2 / 3)
+    assert summary["mean_confidence"] == pytest.approx(0.65)
+    # The confidence-dependent metrics are withheld, and the note now says why.
+    assert summary["ece"] is None
+    assert summary["brier"] is None
+    assert summary["band_counts"] is None
+    assert "no confidence" in summary["calibration_note"]

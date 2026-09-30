@@ -401,8 +401,13 @@
     if (!workflowId || !payload) { toast('Pick a workflow and give it a state', 'warn'); return; }
 
     try {
-      const workflow = await api(`/api/workflows/${workflowId}`);
-      const result = await api(`/api/ingest/${workflow.key}`, {
+      // The manual trigger, not /api/ingest/{key}: that router sits behind
+      // `X-Ingest-Token`, and a browser page has no way to send it — with the token
+      // set, the button used to answer 401. This route forwards to the same
+      // `ingest.dry_run()` helper, so the contract (and the response shape the
+      // renderer reads) is identical, and the evaluation is attributed to the
+      // `workflow` source like any other manual run.
+      const result = await api(`/api/workflows/${workflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({ ...payload, dry_run: true }),
       });

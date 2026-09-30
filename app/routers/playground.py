@@ -79,8 +79,10 @@ def evaluate(
         )
     except evaluation_service.InvalidQuestions as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    # Anything else that refuses the request is left to the app-level handlers, which
+    # answer 422 for a `ValueError` — and, for `QuestionTooLarge`, 422 *with* the
+    # remedy attached. Catching `ValueError` here (as this used to) answered 400
+    # instead and swallowed that remedy, because `QuestionTooLarge` is a `ValueError`.
 
     return to_evaluation_response(
         outcome.evaluation,

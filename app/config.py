@@ -156,6 +156,10 @@ class Settings:
     smtp_password: str | None = None
     smtp_from: str = "laya-studio@localhost"
     smtp_starttls: bool = True
+    #: Socket timeout for one send. Its own setting rather than an alias of
+    #: `llm_timeout`: an SMTP relay has nothing to do with the generative fallback,
+    #: and the two want different values once either is tuned.
+    smtp_timeout: float = 30.0
 
     # Ingestion
     ingest_token: str | None = None
@@ -301,6 +305,7 @@ def _build_settings() -> Settings:
         smtp_password=_optional_str("SMTP_PASSWORD"),
         smtp_from=_str("SMTP_FROM", "laya-studio@localhost") or "laya-studio@localhost",
         smtp_starttls=_bool("SMTP_STARTTLS", True),
+        smtp_timeout=_float("SMTP_TIMEOUT", 30.0),
         ingest_token=_optional_str("INGEST_TOKEN"),
         max_upload_mb=_int("MAX_UPLOAD_MB", 16),
         log_jsonl=_bool("LOG_JSONL", True),

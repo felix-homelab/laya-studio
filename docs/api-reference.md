@@ -17,7 +17,6 @@ JSON; everything else is HTML.
 
 | Status | Means |
 |---|---|
-| 400 | The request was understood and refused (`ValueError` from a service) |
 | 401 | Missing or invalid `X-Ingest-Token`, or `X-Observability-Token` on `/api/observability/*` |
 | 404 | No such resource |
 | 409 | The resource exists but the operation is not allowed (deleting a template, rerunning a running job, retrying an item with no workflow) |

@@ -154,6 +154,51 @@ def test_middle_band_escalates_when_no_fallback_is_configured(client, triage_sch
     assert any(action["kind"] == "review" for action in body["actions"])
 
 
+def test_a_verification_escalation_queues_with_the_review_priority(client, triage_schema, scripted):
+    """The default priority follows where the run *lands*, not the rung it started on.
+
+    A mid-band item that could not be verified ends up in the same queue as one the
+    ladder sent straight there, so it must not sort below it. The step here carries
+    no explicit `priority`, which is what makes the route default observable.
+    """
+    scripted(
+        answers={
+            "department": {
+                "type": "choice",
+                "choice": "billing",
+                "probabilities": {"billing": 0.4, "technical": 0.3, "sales": 0.2, "other": 0.1},
+                "confidence": 0.75,
+            }
+        }
+    )
+
+    workflow = client.post(
+        "/api/workflows",
+        json={
+            "name": "Escalates",
+            "schema_id": triage_schema["id"],
+            "decision_question": "department",
+            "steps": [
+                {"on": "review", "kind": "review", "config": {"reason": "verification_unavailable"}}
+            ],
+        },
+    ).json()
+
+    body = client.post(
+        f"/api/workflows/{workflow['id']}/run",
+        json={"text": "We were billed twice."},
+    ).json()
+
+    # 0.75 is deterministic, so the middle band is entered without a probe.
+    assert body["route"] == "verify"
+    assert body["verification"]["status"] == "skipped"  # no fallback configured
+    assert body["effective_route"] == "review"
+
+    queue = client.get("/api/review/items?status=open").json()
+    assert len(queue) == 1
+    assert queue[0]["priority"] == 100
+
+
 def test_middle_band_auto_executes_when_the_fallback_agrees(client, triage_schema, fake_provider):
     workflow = make_workflow(client, triage_schema)
 
@@ -262,6 +307,36 @@ def test_a_disabled_workflow_refuses_to_run(client, triage_schema):
     body = client.post(f"/api/workflows/{workflow['id']}/run", json={"text": "hi"}).json()
     assert body["route"] == "error"
     assert "disabled" in body["error"].lower()
+
+
+def test_a_disabled_workflow_refuses_a_dry_run_too(client, triage_schema):
+    """A dry run must not promise a route a live run will refuse.
+
+    The dry run is the call an operator makes *before* going live, so answering with a
+    route for a workflow that is switched off is the one answer it must not give —
+    `run_workflow` answers `route: "error"` for exactly that case. Neither door may
+    score a row on the way to saying so, either.
+    """
+    workflow = make_workflow(client, triage_schema)
+    client.put(f"/api/workflows/{workflow['id']}", json={"enabled": False})
+
+    ingested = client.post(
+        f"/api/ingest/{workflow['key']}", json={"text": "hi", "dry_run": True}
+    ).json()
+    assert ingested["route"] == "error"
+    assert ingested["effective_route"] == "error"
+    assert "disabled" in ingested["error"].lower()
+    assert ingested["actions"] == []
+    assert ingested["evaluation"] is None
+
+    manual = client.post(
+        f"/api/workflows/{workflow['id']}/run", json={"text": "hi", "dry_run": True}
+    ).json()
+    assert manual["route"] == "error"
+    assert "disabled" in manual["error"].lower()
+
+    # Refused before the model was consulted, so nothing was persisted.
+    assert client.get("/api/health").json()["database"]["tables"]["evaluations"] == 0
 
 
 def test_workflow_stats(client, triage_schema):

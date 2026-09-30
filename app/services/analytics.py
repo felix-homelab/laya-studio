@@ -315,7 +315,12 @@ def calibration_monitor(db: Session, *, hours: int = DEFAULT_WINDOW_HOURS) -> di
 
 
 def _calibration_monitor(window: AnalyticsWindow, rows: list[Evaluation]) -> dict[str, Any]:
-    evaluations = [item for item in rows if item.label and item.confidence is not None]
+    # Same definition of "labelled" as `_overview` and `calibration._labelled_pairs`:
+    # a row with no recorded choice cannot be scored. Comparing `str(None)` against
+    # the label instead counted it as a miss and dragged the accuracy down.
+    evaluations = [
+        item for item in rows if item.label and item.top_choice and item.confidence is not None
+    ]
 
     if not evaluations:
         return {

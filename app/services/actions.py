@@ -285,7 +285,9 @@ def email_action(
 
     started = perf_counter()
     try:
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=settings.llm_timeout) as smtp:
+        with smtplib.SMTP(
+            settings.smtp_host, settings.smtp_port, timeout=settings.smtp_timeout
+        ) as smtp:
             if settings.smtp_starttls:
                 smtp.starttls()
             if settings.smtp_username:
@@ -437,10 +439,21 @@ def build_context(
     state_text: str,
     reason: str | None = None,
     alternatives: list[dict[str, Any]] | None = None,
+    landing_route: str | None = None,
     run: WorkflowRun | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Assemble the template context handed to every action."""
+    """Assemble the template context handed to every action.
+
+    ``route`` is the rung the confidence ladder chose, and it is what ``{route}``
+    renders. ``landing_route`` is where the run actually ended up once verification
+    had its say, and it defaults to ``route``. They differ exactly when the middle
+    band was adjudicated: a failed or unavailable fallback escalates into ``review``,
+    an agreeing one settles in ``auto``. The default review priority follows the
+    *landing* route, so an escalated item is queued with the same weight as one the
+    ladder sent straight there — see the ``{priority}`` row in ``docs/workflows.md``.
+    """
+    landing = landing_route or route
     context: dict[str, Any] = {
         "workflow_id": workflow.id if workflow is not None else None,
         "workflow_key": workflow.key if workflow is not None else None,
@@ -455,7 +468,8 @@ def build_context(
         "state_text": state_text,
         "reason": reason,
         "alternatives": alternatives or [],
-        "priority": 100 if route == "review" else 0,
+        "landing_route": landing,
+        "priority": 100 if landing == "review" else 0,
     }
     if extra:
         context.update(extra)
